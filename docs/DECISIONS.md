@@ -450,3 +450,69 @@ What limits the conclusion:
 
 Before the importer route is settled: add tracks (segments and arcs) and pad
 geometry to the audit, then run it on a multilayer board saved by KiCad 10.
+
+## 2026-11-14 — Experiment 7: reference-tool preparation and install blocker
+
+**Result: blocked, not passed. Recommendation: install the external reference
+tools before attempting a numerical comparison; do not claim reference
+voltages.**
+
+The development session has neither a padne executable nor a KiPI checkout.
+Attempting `git ls-remote https://github.com/atx/padne.git HEAD` failed with
+`Could not resolve host: github.com`. Direct package installation was already
+observed to fail DNS resolution in this session. Documentation and source were
+read through connected retrieval, but that does not supply executable binaries
+or their dependencies to the local environment.
+
+Prepared a reproducible benchmark using the same unmodified StickHub board as
+experiment 6. The source and load terminals and all probes are checked against
+the saved pad-to-net mappings before preparation. The source-board hash remains
+`cee5a90f8803791cc55498d2576ed1f3416060d37701a02d4ec2937073c76051`.
+
+- Source: 5 V at J2.1 relative to J2.4.
+- Load: 0.5 A at J7.1 with an ideal common return at J2.4. This deliberately
+  excludes remote return-copper drop for an initial single-rail comparison.
+- Probes: J2.1 through J8.1, each on +5V.
+- Target material: 35 µm copper on each layer, ρ = 1.724e-8 Ω·m at 20 °C,
+  25 µm assumed barrel plating, zero etch undercut. Actual tool settings must
+  be confirmed before accepting results.
+- Thermal, active components and other operating loads are excluded. This is
+  a synthetic distribution benchmark, not the board's complete operating model.
+
+`experiments/exp07_reference_tools.py` makes working copies of native project
+files, writes a benchmark manifest and external padne directives, and records
+missing tools as blockers with null reference voltages. It can attempt padne's
+documented solve command once a suitable executable is available. A successful
+solution file still requires reviewed probe extraction before the comparison
+is complete. Its exit status remains 2 while measurements are pending.
+
+Installation and run instructions are in
+[experiment-07-setup.md](experiment-07-setup.md). They use padne's official
+all-in-one Linux executable and the official KiPI `v1.0.1` source in a separate
+Python 3.12 environment. The unrelated PyPI `kipi` package is not used.
+Neither tool is added to PDNLab's dependencies or incorporated into its solver.
+
+Relevant interfaces were checked against the upstream padne CLI and directive
+source. In particular, current padne source supports `--directives` and
+`--no-schematic-directives`; the downloaded binary must be probed for these
+options because it can differ from the source branch. KiPI's standalone entry
+point is `kipi.__main__:main`, not its KiCad plugin action entry point.
+
+**Verification:** the preparation command produced benchmark/directive files
+and an explicit blocked report. A test checks that missing tools produce exit
+2, never a pass or fabricated voltage, and that the working-board and source
+hashes remain identical. All 119 tests pass locally, with no skips or warnings.
+No external reference solver has been run; no meshing/runtime or numerical
+accuracy conclusion can yet be drawn.
+
+### Review notes (Claude, 2026-11-14)
+
+- The directive file and command line were compared with padne at commit
+  `acab836` (2026-10-28): `VOLTAGE` (p, n, v), `CURRENT` (f, t, i), `PROBE` (p)
+  and `COPPER` (conductivity in S/m, plating and undercut in metres) exist with
+  these parameter names, the external file format accepts `#` comment lines,
+  and `solve` takes `--directives` and `--no-schematic-directives`. The
+  all-in-one binary may be older than that commit, so the preflight still has
+  to pass on the downloaded file.
+- Nothing was run. The status stays blocked until both tools have been
+  installed and tried on the board.

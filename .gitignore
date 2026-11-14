@@ -10,3 +10,6 @@ build/
 *.msh
 *.vtu
 *.vtk
+
+# Independently installed reference solvers (not PDNLab source)
+reference-tools/

@@ -36,6 +36,8 @@ those tests run there too. The solver never imports the Gmsh Python API.
 | 4 | Two layer rings connected by a finite via barrel resistor | Passes, see `tests/test_exp04_two_rings.py` |
 | 5 | Current conservation, per-layer via KCL and independent power balance across experiments 1–4 | Passes, see `tests/test_exp05_balances.py` |
 | 6 | KiCad 10 IPC-2581 export against saved native board data | Partial: zone fills, stackup, pin-to-net and vias match on the two-layer StickHub demo; tracks, pad geometry and multilayer boards not audited; importer choice provisional. See `tests/test_exp06_kicad_export.py` |
+| 7 | padne and KiPI reference runs on StickHub | Prepared; blocked on external-tool installation, see [setup](docs/experiment-07-setup.md) |
+| 8 | One net and layer of the real board through geometry cleanup and Gmsh | Not started |
 
 An extra regression test, `tests/test_offcentre_via.py`, checks a via placed
 off-centre in a circular sheet, where current crowds onto one side of the rim.
@@ -105,6 +107,12 @@ The KiCad integration test is optional and skips without KiCad 10 and the
 installed StickHub demo. CI currently installs Gmsh, but does not install KiCad;
 the XML inspection unit tests still run there.
 
+Experiment 7 is prepared but remains pending. Neither reference tool is
+installed in the development session, and its terminal cannot resolve GitHub.
+See [experiment 7 setup](docs/experiment-07-setup.md) for separate installation
+commands and the defined source/load comparison. No reference voltages are
+claimed yet.
+
 ## Layout
 
 | Path | Content |
@@ -112,6 +120,7 @@ the XML inspection unit tests still run there.
 | `docs/project-plan.md` | Development plan, milestones and validation criteria |
 | `docs/DECISIONS.md` | Experiment results and recommendations |
 | `docs/off-centre-via-reference.md` | Derivation of the off-centre via reference |
+| `docs/experiment-07-setup.md` | Installing padne and KiPI for the reference comparison |
 | `src/pdnlab_dc/` | Solver package |
 | `tests/` | Analytic tests, run on every commit |
 | `experiments/` | Phase 0 experiment scripts, one per experiment |
