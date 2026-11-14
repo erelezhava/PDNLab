@@ -36,6 +36,11 @@ those tests run there too. The solver never imports the Gmsh Python API.
 | 4 | Two layer rings connected by a finite via barrel resistor | Passes, see `tests/test_exp04_two_rings.py` |
 | 5 | Current conservation, per-layer via KCL and independent power balance across experiments 1–4 | Passes, see `tests/test_exp05_balances.py` |
 
+An extra regression test, `tests/test_offcentre_via.py`, checks a via placed
+off-centre in a circular sheet, where current crowds onto one side of the rim.
+Its closed-form reference is derived in
+[docs/off-centre-via-reference.md](docs/off-centre-via-reference.md).
+
 Print the numbers with `uv run python experiments/exp01_rectangle.py`.
 
 Run the Gmsh round trip with:
@@ -83,6 +88,7 @@ heat is computed from branch voltage drops.
 | --- | --- |
 | `docs/project-plan.md` | Development plan, milestones and validation criteria |
 | `docs/DECISIONS.md` | Experiment results and recommendations |
+| `docs/off-centre-via-reference.md` | Derivation of the off-centre via reference |
 | `src/pdnlab_dc/` | Solver package |
 | `tests/` | Analytic tests, run on every commit |
 | `experiments/` | Phase 0 experiment scripts, one per experiment |

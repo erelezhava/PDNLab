@@ -46,23 +46,33 @@ Mesh.Binary = 0;
     )
 
 
-def write_annulus_geo(path, inner_radius, outer_radius, mesh_size):
+def write_annulus_geo(path, inner_radius, outer_radius, mesh_size, inner_offset=0.0):
     """Write a circular annulus with physical groups copper, inner and outer.
 
     Each circle has four exact quarter-circle CAD arcs. First-order mesh edges
     approximate those arcs by chords; refinement reduces that geometry error
     along with the finite-element error.
+
+    The outer circle is centred on the origin. inner_offset moves the centre
+    of the inner circle to (inner_offset, 0); it must leave copper all the way
+    round the hole. With the default of 0 the two circles are concentric.
     """
     values = np.asarray([inner_radius, outer_radius, mesh_size], dtype=float)
     if not np.isfinite(values).all() or np.any(values <= 0) or inner_radius >= outer_radius:
         raise ValueError("require finite 0 < inner_radius < outer_radius and mesh_size > 0")
+    if not np.isfinite(inner_offset) or inner_offset < 0 or inner_offset + inner_radius >= outer_radius:
+        raise ValueError("require finite 0 <= inner_offset < outer_radius - inner_radius")
     lines = ["// SI units: metres.", f"Point(1) = {{0, 0, 0, {mesh_size:.17g}}};"]
-    for start, radius in [(2, outer_radius), (6, inner_radius)]:
+    inner_centre = 1
+    if inner_offset > 0:
+        inner_centre = 10
+        lines.append(f"Point(10) = {{{inner_offset:.17g}, 0, 0, {mesh_size:.17g}}};")
+    for start, radius, centre_x in [(2, outer_radius, 0.0), (6, inner_radius, inner_offset)]:
         for offset, (x, y) in enumerate([(radius, 0), (0, radius), (-radius, 0), (0, -radius)]):
-            lines.append(f"Point({start + offset}) = {{{x:.17g}, {y:.17g}, 0, {mesh_size:.17g}}};")
-    for arc_start, point_start in [(1, 2), (11, 6)]:
+            lines.append(f"Point({start + offset}) = {{{centre_x + x:.17g}, {y:.17g}, 0, {mesh_size:.17g}}};")
+    for arc_start, point_start, centre in [(1, 2, 1), (11, 6, inner_centre)]:
         for i in range(4):
-            lines.append(f"Circle({arc_start + i}) = {{{point_start + i}, 1, {point_start + (i + 1) % 4}}};")
+            lines.append(f"Circle({arc_start + i}) = {{{point_start + i}, {centre}, {point_start + (i + 1) % 4}}};")
     lines.extend([
         "Curve Loop(1) = {1, 2, 3, 4};",
         "Curve Loop(2) = {11, 12, 13, 14};",

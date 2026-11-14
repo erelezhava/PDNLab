@@ -285,3 +285,47 @@ workflow has not yet been run remotely.
 **Limits:** self-consistency catches numerical and bookkeeping faults; it does
 not establish physical model accuracy. KiCad export inspection, real-board
 meshing, full 3D comparison and hardware measurements remain future work.
+
+## 2026-11-14 — Additional check: off-centre via (current crowding)
+
+**Result: passed. Not one of the eight planned experiments; added during review
+of experiments 2 to 5.**
+
+Experiments 3 and 4 are axisymmetric, so the current density is uniform round
+the via rim. This check moves the hole off-centre in a circular sheet, which
+concentrates the current on the side nearest the edge, and compares against
+
+R = ρ/(2πt) · acosh((a² + b² − d²)/(2ab))
+
+for hole radius a, sheet radius b and centre offset d. The derivation, the
+closed-form voltage field and the closed-form share of current leaving through
+the near half of the outer edge are in
+[off-centre-via-reference.md](off-centre-via-reference.md).
+
+| Case | a (mm) | b (mm) | d (mm) | Copper (µm) | Coarse → fine size (mm) | Coarse → fine nodes | Coarse error | Fine error | Largest field error (V) | Near-half current: solved / closed form |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| Via 0.15 mm from edge | 0.175 | 1.5 | 1.175 | 35 | 0.05 → 0.025 | 3621 → 13363 | 0.0255% | 0.0017% | 0.0014 | 0.93491 / 0.93491 |
+| Via half-way out | 0.175 | 1.5 | 0.7 | 35 | 0.05 → 0.025 | 3690 → 13373 | 0.0072% | 0.0010% | 0.0009 | 0.78228 / 0.78229 |
+| Large hole | 1 | 5 | 3 | 70 | 0.25 → 0.125 | 1644 → 5912 | 0.0340% | 0.0048% | 0.0018 | 0.86322 / 0.86322 |
+
+Limits applied by the test: resistance error ≤ 0.5% and smaller at h/2; nodal
+voltage within 0.005 V of the closed-form field for a 1 V excitation; near-half
+current share within 0.002; current and power balance checks pass. The offset
+lowers the resistance by 12% to 47% relative to a centred hole, far more than
+the tolerance, so a misplaced hole cannot pass.
+
+`write_annulus_geo()` gained an optional `inner_offset`. With the default of 0
+it writes the same file as before, which a test checks.
+
+Environment: Gmsh `4.15.2`, meshio `5.3.5`, Python `3.13.18`.
+
+Reproduce with:
+
+```sh
+uv run pytest -q tests/test_offcentre_via.py
+```
+
+**Limits:** the tied rim is the exact boundary condition for this 2D problem,
+so agreement shows the tie, the assembly and the mesh handle a non-uniform rim
+current. It does not show that an equipotential rim represents a real plated
+barrel; that needs the full-3D coupon or measurement.
