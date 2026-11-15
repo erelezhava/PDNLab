@@ -1120,3 +1120,102 @@ voltages relative to tiny drops still face floating-point representation
 limits; the tested voltage range is not an unlimited precision guarantee.
 No importer, contact builder, thermal or viewer changes were made. Work is
 uncommitted; no files were staged, pushed or merged by this session.
+
+## 2026-11-15 — Phase 1 increment 3: named synthetic network composition
+
+**Result / Recommendation: named composition passes analytic strip, branching
+three-layer barrel and annular-via checks. Recommendation: review this bounded
+interface before adding geometry-based finite-area contacts. No phase-1
+closeout or production-import readiness is claimed.**
+
+Starting state verified: clean `phase1-solver-core`, HEAD `42adc63`; Erekle
+committed the reference-stability correction. Local baseline was rerun:
+**279 passed, no skips, 50.78 s**. No additional repository instruction file
+was found. The conversation's project rules continue to apply.
+
+`pdnlab_dc.network.Network` composes the existing validated package primitives:
+
+- Named sheet meshes/materials, named disjoint terminal selections and named
+  positive lumped branches. Equipotential terminals tie their selected nodes;
+  explicit nonnegative node weights instead leave the selection untied and
+  allocate current in that exact node order. Untied groups do not receive an
+  implicit equal allocation. A bare vertex remains a mathematical point;
+  no contact geometry is constructed by this increment.
+- Barrel segments use the existing axial formula between separate rim
+  terminals on distinct sheets. No common cross-layer rim node is created.
+  Each declared rim must have an incident branch. The caller supplies the
+  contacted sheets, layer-centre spacing and copper radii.
+- Preparation snapshots the builder and fixes the source-terminal membership.
+  Repeated cases specify those source voltages and nonnegative named sink
+  currents, with no implicit transfer extraction. Unknown/malformed loads,
+  loads at fixed sources, overlapping terminal selections, invalid branch
+  endpoints and unanchored copper raise errors. No islands are silently dropped.
+- Results preserve maps from original sheet nodes to electrical unknowns and
+  report electrical/sheet/terminal voltages, signed external terminal currents,
+  a-to-b branch currents, independently integrated sheet/branch loss, solve/
+  postprocessing timing and conservation checks. Rim KCL includes sheet current,
+  every adjacent branch, and any external source/sink directly at the rim.
+  The result's `passed` follows all checks; failures are returned explicitly.
+- Optional named-terminal transfer extraction delegates to the existing
+  bounded-RHS method for equipotential terminals. Untied groups have multiple
+  voltages and are explicitly unsupported by this initial transfer wrapper.
+  Preparation/last-solve instrumentation is exposed. Solver sparse bytes exclude
+  the composition wrapper's check matrix, original sheet matrices, geometry
+  and maps; whole-model or peak-RSS memory is not measured.
+
+Validation retains the 0.5% analytic gate and tighter existing case limits.
+New strip/drop/current/loss/transfer comparisons use 1e-6 relative where
+applicable. The unit-square unequal-load case has an independent four-edge
+resistor reference: fractions 0.25/0.75 give nodal voltages -5/6 and -7/6 V
+and loss 13/12 W at a 1 A sink. This would fail if the selection were tied
+or silently assigned equal currents. Additional cases verify signed current
+from two voltage sources, reversed resistor orientation, snapshot isolation,
+one LU across load/reference changes and transfer extraction, invalid inputs,
+and an externally driven rim. Deliberately omitting barrel heat makes power
+fail while current/rim checks pass.
+
+`experiments/phase1_network_cases.py` is a runnable example using only this
+interface, not manual sparse wiring. Three 50 × 5 mm strips have copper
+thicknesses 18/35/70 µm and rho = 1.724e-8 ohm metre. Two barrel segments
+use 0.15/0.175 mm copper radii and 0.8/0.05 mm lengths. The source is the top
+strip's outer pad at 3.3 V; the middle and bottom pads draw 0.1/0.2 A,
+then 0.2/0.4 A. Expected segment currents are 0.3/0.2 A, then 0.6/0.4 A.
+References use independent strip and annular-area barrel formulas.
+
+| Strip cells per layer | Geometric / electrical nodes | Middle drop at first load (mV) | Bottom drop at first load (mV) | Largest relative drop error across both loads |
+| --- | --- | --- | --- | --- |
+| 8 × 3 | 108 / 90 | 3.528001868 | 3.534755914 | 2.8464e-13 |
+| 16 × 6 | 357 / 321 | 3.528001868 | 3.534755914 | 3.4714e-13 |
+
+Across these four direct cases: maximum relative branch-current error
+3.3396e-11; maximum global current residual 4.4009e-13 A; independent power
+residual 1.2065e-15 W; per-layer rim residual 8.0096e-12 A. All checks pass.
+The hand-made strip fields are exact for linear FEM up to roundoff; this
+near-zero error is not evidence for general geometric or physical accuracy.
+Only numerical/physical checks gate the example; no timing threshold is claimed.
+
+The composed annular-via test uses two separately meshed annuli, outer radii
+1.5/1.0 mm, 35/18 µm sheets, the same copper radii, a 1.6 mm barrel and a
+0.25 A sink. Against ring + barrel + ring, measured resistance errors are
+0.0226758% at h = 0.1 mm (1,438 geometric nodes) and 0.00329075% at h =
+0.05 mm (5,333 nodes). Both meet 0.5% and error decreases on refinement.
+Current, power and both layer-rim checks pass. Each level's model/factors are
+released before building the next; only scalar summaries survive. Gmsh is
+still invoked externally. No existing experiment script was migrated.
+
+Verification: final full suite **311 passed, no skips, 50.81 s**; focused
+composition tests **32 passed, 2.22 s**. The runnable example exits successfully
+with all four cases passing. `git diff --check` passes. Commands:
+
+```sh
+.venv/bin/python -m pytest -q
+.venv/bin/python -m pytest -q -s tests/test_network.py
+.venv/bin/python experiments/phase1_network_cases.py
+```
+
+Not run: production import or new private-board scenarios, new padne/KiPI or
+full-3D comparisons, measurements, large-board/peak-memory profiling or remote
+CI. No thermal or viewer changes. Terminal selections currently belong to
+one sheet and may not overlap; geometry-based finite contacts, overlap/alias
+resolution and importer integration remain later work. Changes are uncommitted;
+no files were staged, pushed or merged by this session.

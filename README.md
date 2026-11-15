@@ -3,8 +3,8 @@
 Open-source DC power-integrity (IR drop) solver for PCBs. Own solver code, KiCad 10 boards as the first input, Apache-2.0.
 
 **Status: phase 0 merged through PR #7; phase 1 solver core started.** Experiment
-scripts solve one real-board net. The first phase-1 increment adds reusable
-sparse-LU preparation and direct load-case solves on synthetic networks.
+scripts solve one real-board net. Phase 1 has reusable sparse-LU solves and
+checked composition of named synthetic sheets, terminals and branches.
 IPC-2581 and per-pin terminal-model choices are confirmed by the maintainer;
 the production importer and contact model are not implemented yet.
 See [the result log](docs/DECISIONS.md) for measured results and limitations,
@@ -86,6 +86,68 @@ reference invariance and conservation. The formerly failing power-check case
 and its correction are recorded in the result log. Very large common-mode
 voltages relative to the drop remain limited by floating-point resolution.
 The real-board experiment's transfer/scenario workflow has not been migrated.
+
+## Named synthetic networks
+
+`pdnlab_dc.network.Network` composes the validated primitives without manual
+sparse-matrix wiring. All geometry/material inputs use SI units:
+
+```python
+from pdnlab_dc.network import Network
+from pdnlab_dc.simple_meshes import rectangle_mesh
+
+nodes, triangles, left, right = rectangle_mesh(0.05, 0.005, 12, 4)
+net = Network()
+net.add_sheet("top", nodes, triangles, sheet_conductance=35e-6 / 1.724e-8)
+net.add_terminal("source", "top", left)
+net.add_terminal("load", "top", right)
+prepared = net.prepare(["source"])
+result = prepared.solve({"source": 3.3}, {"load": 0.1})
+assert result.passed, result.checks
+next_case = prepared.solve({"source": 3.3}, {"load": 0.2})  # same LU
+```
+
+Terminal selections are disjoint node groups on one sheet. By default their
+nodes are tied equipotential, representing an ideal soldered pad/rim. Passing
+explicit `weights=[...]` leaves them untied and allocates sink current by those
+nonnegative fractions, in selected-node order. There is no implicit equal
+allocation for an untied group. Geometry-based finite-area contact selection
+is not implemented; a bare vertex still has point-contact mesh dependence.
+
+Use `add_resistor(name, a, b, resistance)` between equipotential terminals.
+Use `add_barrel(name, a, b, length=..., inner_radius=..., outer_radius=...,
+resistivity=...)` between terminals declared with `rim=True` on distinct
+sheets. Rims stay separate electrical unknowns; each declared rim must have
+an incident branch. The caller supplies contacted layers and copper radii.
+
+Preparation snapshots the builder. Source membership then stays fixed;
+`solve` requires exactly those source-voltage names and accepts nonnegative
+sink currents by load-terminal name. Unspecified loads draw zero. Unknown
+loads, loads at fixed sources, overlapping selections and floating components
+raise errors instead of silently changing a case. Source terminal currents
+may be positive (supplying) or negative (absorbing).
+
+Results include electrical and per-sheet voltages, per-selected-node terminal
+voltages, external terminal currents (positive into copper), branch currents
+(declared a → b), independently integrated sheet/branch losses, timings and
+conservation checks. Rim KCL includes sheet, every incident branch and any
+external current at that rim. Check `result.passed`: failed checks are returned
+with their residuals and tolerances. `prepared.node_map` gives copies mapping
+original sheet nodes to electrical unknowns.
+
+`prepared.stats` separates sheet assembly, composition and solver preparation;
+`prepared.last_solve` exposes the last low-level solve/transfer timing and RHS
+statistics. Its solver sparse-byte count excludes the wrapper's check matrix,
+original sheet matrices, geometry and mappings; it is not whole-model memory.
+`prepared.transfer_resistance(["load"], batch_size=8)` optionally extracts Z
+in requested name order for equipotential terminals only.
+
+Run the three-layer analytic example with named pads/rims and two barrel
+segments, at two mesh resolutions and two current levels:
+
+```sh
+uv run python experiments/phase1_network_cases.py
+```
 
 ## Phase 0 experiments
 

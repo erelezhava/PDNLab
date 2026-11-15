@@ -288,7 +288,13 @@ Recommended sequence, retaining the validated package primitives:
    preparation/solve time and sparse storage. First increment implemented;
    measured results and limits are in `DECISIONS.md`.
 2. Consolidate synthetic sheet/tie/barrel/terminal composition and independent
-   conservation reporting. The measured common-mode power-check sensitivity
+   conservation reporting. A first composition increment is implemented in
+   `pdnlab_dc.network`: named sheets, disjoint tied/explicitly weighted terminal
+   selections, positive lumped/barrel branches, prepared source membership,
+   repeated direct load cases and checked named results. Analytic strip,
+   branching three-layer and annular-via regressions are recorded in the result
+   log; this is not a production board model or contact geometry builder.
+   The measured common-mode power-check sensitivity
    has been corrected and regression-tested using relative solves/reactions
    and per-network current checks; see the result log for limits.
 3. Implement finite-area contact selection and analytic/convergence coverage;
