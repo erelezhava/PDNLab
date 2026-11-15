@@ -13,6 +13,14 @@ uv run pytest    # runs the analytic tests
 
 Without uv: `pip install -e . pytest`, then `pytest`.
 
+## Phase 0 experiments
+
+| # | Experiment | Status |
+| --- | --- | --- |
+| 1 | Plain rectangle on a hand-made mesh against R = ρL/(Wt) | Passes, see `tests/test_exp01_rectangle.py` |
+
+Print the numbers with `uv run python experiments/exp01_rectangle.py`.
+
 ## Layout
 
 | Path | Content |
