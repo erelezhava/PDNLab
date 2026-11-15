@@ -293,13 +293,17 @@ Recommended sequence, retaining the validated package primitives:
    selections, positive lumped/barrel branches, prepared source membership,
    repeated direct load cases and checked named results. Analytic strip,
    branching three-layer and annular-via regressions are recorded in the result
-   log; this is not a production board model or contact geometry builder.
+   log; this is not a production board model or contact-boundary remesher.
    The measured common-mode power-check sensitivity
    has been corrected and regression-tested using relative solves/reactions
    and per-network current checks; see the result log for limits.
-3. Implement finite-area contact selection and analytic/convergence coverage;
-   retain point-contact mesh-dependence warnings. Continue analytic gates at
-   0.5% or existing tighter case-specific limits.
+3. Finite-area contact selection is implemented on supplied meshes, with two
+   explicit models: mesh-conforming equipotential electrodes and integrated
+   uniform-current patches. Analytic strip/disk and mesh-convergence coverage,
+   plus a point-contact growth diagnostic, are recorded in `DECISIONS.md`.
+   Automatic contact-boundary remeshing, importer/pad integration and contact
+   resistivity remain later work. Analytic gates remain 0.5% or existing
+   tighter case-specific limits; phase-1 closeout still needs maintainer review.
 
 Sparse LU is the initial backend behind `pdnlab_dc.solver`; an iterative
 implementation remains future work. Production import, thermal and viewer are

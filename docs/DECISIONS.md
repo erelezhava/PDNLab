@@ -1219,3 +1219,119 @@ CI. No thermal or viewer changes. Terminal selections currently belong to
 one sheet and may not overlap; geometry-based finite contacts, overlap/alias
 resolution and importer integration remain later work. Changes are uncommitted;
 no files were staged, pushed or merged by this session.
+
+## 2026-11-15 — Phase 1 increment 4: finite-area contact selection
+
+**Result / Recommendation: explicit finite electrodes and uniform-current area
+loads pass analytic/convergence checks with unchanged electrical gates.
+Recommendation: review these bounded contact models and remaining phase-1
+coverage before proposing phase-1 closeout. No production contact/importer or
+3D interface validation is claimed.**
+
+Starting state verified: clean `phase1-solver-core`, HEAD `c9a3f2c`; Erekle
+committed named network composition. Baseline rerun: **311 passed, no skips,
+50.70 s**. No additional repository instruction file was found. Shapely 2.2.0
+was already installed and declared; no dependency was added.
+
+`pdnlab_dc.contacts.select_area_contact` and `Network.add_contact` accept an
+explicit positive-area 2D polygon at mesh coordinates in metres. The entire
+region must lie on nonoverlapping copper elements. Missing copper, contact
+holes lying in mesh voids and overlapping mesh elements within a contact are
+checked geometrically; the area is not silently clipped to the surviving
+copper. Coverage uses a 1e-10 relative geometric tolerance, separate from and
+without relaxing analytic/current/power gates.
+
+The two explicit models are different physical idealizations:
+
+- `equipotential`: an ideal electrode shorts only its specified area. Its
+  boundary must conform to existing mesh edges (a union of full triangles).
+  Materially cut elements raise with a request for a conforming mesh, instead
+  of using nearest vertices or enlarging the electrode. It supports sources,
+  sinks, branch endpoints and the existing optional transfer interface.
+- `uniform_current`: the load has uniform prescribed current per area and
+  leaves copper untied. Each triangle is clipped against the region. For its
+  linear shape functions, integral(N_i) = clipped_area × N_i(clipped_centroid),
+  which produces conservative nodal load fractions even for nonconforming
+  patches, holes and multi-piece intersections. Support vertices may lie
+  outside the polygon; this is FEM load integration, not contact enlargement.
+  The same weights evaluate the area-average copper voltage. It is a sink
+  model, not an equipotential voltage source or a single-node transfer port.
+
+Prepared models expose scalar geometry/model summaries via `contact_info`;
+`NetworkResult.contact_voltages_v` reports electrode voltage or the area mean.
+The original selected-node voltage output remains available. Contact-selection
+time is recorded separately from sheet assembly, composition and LU. No
+whole-model memory or bottleneck claim is made. Existing snapshot and LU reuse
+behaviour is retained. No existing experiment script or core check was removed.
+
+Validation includes a positive-area patch entirely inside one triangle with
+no mesh vertices inside it: its exact load fractions are 0.5/0.25/0.25, with
+either triangle orientation. An asymmetric polygon hole verifies the exact
+mean of a linear field. Positioned full-width electrodes give the analytic
+strip resistance across their actual gap, including translated coordinates;
+their fields/loss/transfer tests keep a 1e-6 relative limit. Invalid regions,
+bad meshes, unresolved electrode edges and overlapping coarse support are
+rejected. Failed selection leaves the builder unchanged.
+
+Measured example: `experiments/phase1_contact_cases.py`, rho = 1.724e-8 ohm
+metre, 35 µm copper, 1 A numerical sink per case. Each model/factorization is
+released before the next level, with only scalar summaries/checks retained.
+No external mesher or private board is needed for these examples.
+
+**Finite circular electrode.** A fixed 128-sided contact polygon of radius
+1.25 mm is placed at the centre of a 5 mm-radius polygonal disk. The outer
+boundary is at 0 V. Copper under the electrode is tied; outside it the
+reference is rho × ln(5/1.25)/(2πt) = 0.1086787928 mΩ. The polygon is unchanged
+across radial refinements; circle-reference error includes polygon geometry.
+
+| Radial cells | Mesh nodes | Electrode resistance (mΩ) | Relative circle-reference error | Mathematical point diagnostic (mΩ) |
+| --- | --- | --- | --- | --- |
+| 16 | 2,049 | 0.1084677681 | 0.1941728% | 0.3712254947 |
+| 32 | 4,097 | 0.1086092683 | 0.0639724% | 0.4255444197 |
+| 64 | 8,193 | 0.1086450184 | 0.0310773% | 0.4798705130 |
+
+All finite-electrode levels meet 0.5% and error decreases. The point column
+instead draws 1 A at the centre vertex alone, with no area model. Its voltage
+keeps growing; each halving's increment matches rho × ln(2)/(2πt) within the
+test's 1% diagnostic limit. Those values are not physical contact-resistance
+predictions. Both types pass independent numerical current/power checks.
+
+**Uniform-current patch.** A 50 × 5 mm strip has a source electrode covering
+x = 0 to 5 mm at 3.3 V and a full-width uniform sink patch x = 20.3 to
+30.7 mm. Its edges cut the load mesh triangles. Let a = 20.3 mm, d = 10.4 mm
+and x_s = 5 mm. Lateral current is constant before a and falls linearly to
+zero across d. Integrating its square gives loss/I² and mean drop/I equal to
+(a-x_s+d/3)/(gW) = 1.8487847619 mΩ, where g = t/rho.
+
+| Cells | Mesh nodes | Area-mean drop / I (mΩ) | Relative error |
+| --- | --- | --- | --- |
+| 40 × 8 | 369 | 1.8476518402 | 0.0612793% |
+| 80 × 16 | 1,377 | 1.8485015270 | 0.0153201% |
+| 160 × 32 | 5,313 | 1.8487132568 | 0.00386768% |
+
+Both mean-voltage and independently integrated heat errors meet 0.5% at all
+levels and decrease with refinement. Across all nine example cases, maximum
+global current residual is 3.7681e-12 A and power residual is 3.0572e-15 W.
+No vias are present in these contact examples; existing via regressions remain.
+The README's finite-contact example was also run successfully.
+
+Verification: final full suite **336 passed, no skips, 56.12 s**. Focused
+contact/composition tests: **57 passed, 3.97 s** (25 new contact/mesh tests).
+The example exits successfully with all nine cases, finite-error convergence
+and the point-growth diagnostic passing. `git diff --check` passes. Commands:
+
+```sh
+.venv/bin/python -m pytest -q
+.venv/bin/python -m pytest -q -s tests/test_contacts.py tests/test_network.py
+.venv/bin/python experiments/phase1_contact_cases.py
+```
+
+Limits: no automatic contact-boundary remeshing, pad/importer integration,
+contact resistivity, pressure-dependent distribution or 3D interface model.
+The copper solver still requires disjoint terminal support. Disjoint physical
+contacts sharing coarse basis vertices must be refined; overlapping selections
+are not silently merged. Accuracy is established only for these synthetic
+idealizations, not arbitrary board contacts. Not run: new private-board or
+padne/KiPI cases, remote CI, hardware/full-3D correlation or large-board peak
+memory/contact-scaling profiles. No thermal or viewer work. Changes remain
+uncommitted; no files were staged, pushed or merged by this session.

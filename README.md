@@ -3,10 +3,10 @@
 Open-source DC power-integrity (IR drop) solver for PCBs. Own solver code, KiCad 10 boards as the first input, Apache-2.0.
 
 **Status: phase 0 merged through PR #7; phase 1 solver core started.** Experiment
-scripts solve one real-board net. Phase 1 has reusable sparse-LU solves and
-checked composition of named synthetic sheets, terminals and branches.
+scripts solve one real-board net. Phase 1 has reusable sparse-LU solves,
+checked named-network composition and finite-area contact selection on meshes.
 IPC-2581 and per-pin terminal-model choices are confirmed by the maintainer;
-the production importer and contact model are not implemented yet.
+the production importer and automatic contact-boundary remeshing are not implemented.
 See [the result log](docs/DECISIONS.md) for measured results and limitations,
 and the [dependency inventory](docs/dependency-license-audit.md) for the
 current licences and packaging boundaries. Phase 1 is not complete.
@@ -64,7 +64,7 @@ Transfer extraction bounds full-field RHS/solution columns by `batch_size`,
 but its returned dense observation-by-injection matrix can still be large.
 It is never built by `solve`. A selected electrical node may represent a tied
 finite contact; selecting a bare mesh vertex does not validate point-contact
-physics. No contact geometry builder is implemented yet.
+physics. Explicit area contacts are available through the network interface below.
 
 `system.stats` reports preparation/factorization time, nonzero counts and
 sparse-array bytes; it does not measure peak RSS or native LU workspace.
@@ -111,8 +111,8 @@ Terminal selections are disjoint node groups on one sheet. By default their
 nodes are tied equipotential, representing an ideal soldered pad/rim. Passing
 explicit `weights=[...]` leaves them untied and allocates sink current by those
 nonnegative fractions, in selected-node order. There is no implicit equal
-allocation for an untied group. Geometry-based finite-area contact selection
-is not implemented; a bare vertex still has point-contact mesh dependence.
+allocation for an untied group. Use `add_contact` below for explicit finite-area
+polygons; a bare vertex still has point-contact mesh dependence.
 
 Use `add_resistor(name, a, b, resistance)` between equipotential terminals.
 Use `add_barrel(name, a, b, length=..., inner_radius=..., outer_radius=...,
@@ -135,7 +135,8 @@ external current at that rim. Check `result.passed`: failed checks are returned
 with their residuals and tolerances. `prepared.node_map` gives copies mapping
 original sheet nodes to electrical unknowns.
 
-`prepared.stats` separates sheet assembly, composition and solver preparation;
+`prepared.stats` separates sheet assembly, area-contact selection, composition
+and solver preparation;
 `prepared.last_solve` exposes the last low-level solve/transfer timing and RHS
 statistics. Its solver sparse-byte count excludes the wrapper's check matrix,
 original sheet matrices, geometry and mappings; it is not whole-model memory.
@@ -148,6 +149,63 @@ segments, at two mesh resolutions and two current levels:
 ```sh
 uv run python experiments/phase1_network_cases.py
 ```
+
+## Finite-area contacts
+
+`Network.add_contact(name, sheet, region, model=...)` selects an explicit
+Shapely `Polygon` in mesh coordinates (metres), including its position and area:
+
+```python
+from shapely.geometry import box
+
+# For the strip above: feed ends on the first grid line; touch may cut cells.
+contact_net = Network()
+contact_net.add_sheet("top", nodes, triangles, 35e-6 / 1.724e-8)
+contact_net.add_contact("feed", "top", box(0, 0, 0.05 / 12, 0.005))
+contact_net.add_contact("touch", "top", box(0.025, 0, 0.035, 0.005),
+                        model="uniform_current")
+contact_model = contact_net.prepare(["feed"])
+case = contact_model.solve({"feed": 3.3}, {"touch": 0.1})
+assert case.passed, case.checks
+print(case.contact_voltages_v["touch"])  # area-average copper voltage
+```
+
+- `equipotential` (default) is an ideal electrode shorting only its specified
+  area. Its boundary must conform to the existing mesh: materially cut
+  triangles raise instead of silently changing the electrode's size. It can
+  be a fixed-voltage source or a current sink; the solve determines sharing.
+- `uniform_current` prescribes constant current per area without tying the
+  copper. Triangle intersections are integrated to obtain FEM nodal load
+  weights and the area-average voltage. It supports current sinks, including
+  patches whose edges cut triangles. Its support vertices may lie outside the
+  polygon; the integrated patch itself is not enlarged. It is not a fixed-
+  voltage source or an equipotential terminal for transfer extraction.
+
+These are distinct idealizations of contact behaviour. No contact resistivity,
+pressure-dependent distribution or 3D interface model is inferred. The region
+must be a valid positive-area 2D polygon fully covered by nonoverlapping copper
+elements. Clipping outside copper, nearest-node fallback and zero-area point
+regions are rejected. Shared terminal support is still unsupported: refine if
+two disjoint physical contacts share coarse-mesh vertices. Automatic remeshing
+and pad/importer integration remain later work.
+
+`prepared.contact_info` reports model, bounds, requested/covered area and support
+size. `result.contact_voltages_v` reports the electrode voltage or uniform-area
+mean; `terminal_voltages_v` still returns all selected nodal voltages. The
+standalone `pdnlab_dc.contacts.select_area_contact` exposes the selection and
+weights for other callers. Geometry checks use a 1e-10 relative area tolerance;
+electrical conservation and analytic tolerances are unchanged.
+
+Run finite-electrode and uniform-patch convergence against analytic references,
+with a separate mathematical-point diagnostic:
+
+```sh
+uv run python experiments/phase1_contact_cases.py
+```
+
+The diagnostic point's voltage grows with refinement; it is not reported as a
+physical contact-resistance prediction. The finite circular electrode uses a
+fixed 128-sided polygon, so its circle-reference error includes polygon geometry.
 
 ## Phase 0 experiments
 

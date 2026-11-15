@@ -49,3 +49,30 @@ def rectangle_mesh(length, width, nx, ny, diagonals="alternate", jitter=0.0, see
     left_nodes = np.array([index(0, j) for j in range(ny + 1)])
     right_nodes = np.array([index(nx, j) for j in range(ny + 1)])
     return nodes, np.array(triangles), left_nodes, right_nodes
+
+
+def concentric_disk_mesh(radius, radial_cells, sectors=128):
+    """Synthetic polygonal disk with concentric rings, for contact references.
+
+    Returns (nodes, triangles, outer_nodes); node 0 is the centre. The boundary
+    is a regular sectors-gon inscribed in the circle, not an exact CAD circle.
+    A contact on an existing ring with the same sectors is mesh-conforming.
+    """
+    if not np.isfinite(radius) or radius <= 0:
+        raise ValueError("radius must be finite and positive")
+    if (isinstance(radial_cells, (bool, np.bool_)) or not isinstance(radial_cells, (int, np.integer))
+            or radial_cells < 1 or isinstance(sectors, (bool, np.bool_))
+            or not isinstance(sectors, (int, np.integer)) or sectors < 3):
+        raise ValueError("require integer radial_cells >= 1 and sectors >= 3")
+    angles = np.arange(sectors)*2*np.pi/sectors
+    unit = np.column_stack([np.cos(angles), np.sin(angles)])
+    rings = np.arange(1, radial_cells+1)*radius/radial_cells
+    nodes = np.vstack([np.zeros((1, 2)), (rings[:, None, None]*unit).reshape(-1, 2)])
+    triangles = [(0, 1+j, 1+(j+1) % sectors) for j in range(sectors)]
+    for ring in range(radial_cells-1):
+        inner, outer = 1+ring*sectors, 1+(ring+1)*sectors
+        for j in range(sectors):
+            k = (j+1) % sectors
+            triangles.extend([(inner+j, outer+j, outer+k), (inner+j, outer+k, inner+k)])
+    outer = 1+(radial_cells-1)*sectors+np.arange(sectors)
+    return nodes, np.array(triangles, dtype=int), outer

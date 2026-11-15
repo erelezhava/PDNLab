@@ -1,19 +1,21 @@
 """Compose synthetic DC sheets, terminals and branches. SI units throughout.
 
-Node selections are supplied by the caller; this module does not construct
-contact geometry or read boards. Terminals are disjoint selections on a sheet.
+Node selections or explicit area-contact polygons are supplied by the caller;
+this module does not remesh contact boundaries or read boards. Terminals are
+disjoint selections on a sheet.
 Without weights a selection is equipotential. Explicit weights instead leave
 the selected nodes untied and prescribe the fraction of load current at each.
 """
 
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
 from time import perf_counter
 
 import numpy as np
 import scipy.sparse as sp
 
 from .checks import balance_checks, resistor_losses, sheet_losses
+from .contacts import AreaContact, select_area_contact
 from .fem import _indices, _network_references, add_resistors, assemble_sheet, tie_nodes
 from .solver import PreparationStats, prepare_fixed_voltages
 from .vias import barrel_resistance
@@ -52,6 +54,8 @@ class _Terminal:
     nodes: np.ndarray
     weights: np.ndarray | None
     rim: bool
+    contact: AreaContact | None = None
+    contact_selection_s: float = 0.
 
 
 @dataclass(frozen=True)
@@ -67,6 +71,7 @@ class NetworkPreparationStats:
     composition_s: float
     geometric_nodes: int
     solver: PreparationStats
+    contact_selection_s: float = 0.
 
 
 @dataclass
@@ -78,6 +83,8 @@ class NetworkResult:
     copper, positive for a supplying source and negative for a sink. Branch
     current is positive from its declared a terminal to b. Checks determine
     passed; a failed conservation check is returned, never silently ignored.
+    contact_voltages_v gives electrode voltage or area-average copper voltage
+    for explicit area contacts; terminal_voltages_v retains all support values.
     """
 
     voltages_v: np.ndarray
@@ -89,6 +96,7 @@ class NetworkResult:
     branch_losses_w: dict[str, float]
     checks: dict
     timings_s: dict[str, float]
+    contact_voltages_v: dict[str, float] = field(default_factory=dict)
 
     @property
     def passed(self):
@@ -146,6 +154,24 @@ class Network:
         self._terminals[name] = _Terminal(sheet, _snapshot(indices, np.int64), weights, bool(rim))
         self._used[sheet][indices] = True
 
+    def add_contact(self, name, sheet, region, *, model="equipotential"):
+        """Add a finite-area terminal at an explicit polygon, without remeshing.
+
+        Equipotential electrodes require mesh-conforming boundaries. Uniform-
+        current patches integrate area weights and are supported as loads only.
+        Their support nodes must not overlap another terminal selection; refine
+        if disjoint physical contacts share coarse FEM support vertices.
+        """
+        _name(name, self._terminals)
+        started = perf_counter()
+        if sheet not in self._sheets:
+            raise ValueError(f"unknown sheet: {sheet!r}")
+        mesh = self._sheets[sheet]
+        selection = select_area_contact(mesh.nodes, mesh.triangles, region, model=model)
+        self.add_terminal(name, sheet, selection.nodes, weights=selection.weights)
+        self._terminals[name] = replace(self._terminals[name], contact=selection,
+                                        contact_selection_s=perf_counter()-started)
+
     def _add_branch(self, name, a, b, resistance):
         _name(name, self._branches)
         if a not in self._terminals or b not in self._terminals:
@@ -182,7 +208,8 @@ class Network:
 class PreparedNetwork:
     """Prepared snapshot. Source voltages and sink currents may vary per solve.
 
-    stats separates sheet assembly, composition and low-level preparation/LU.
+    stats separates sheet assembly, area-contact selection, composition and
+    low-level preparation/LU.
     Low-level sparse-byte counts exclude the retained original sheet matrices,
     geometry/maps and this wrapper's check matrix; they are not whole-model RSS.
     No transfer matrix is generated unless transfer_resistance is requested.
@@ -227,7 +254,8 @@ class PreparedNetwork:
         self._references, _ = _network_references(matrix, self._fixed)
         composition_s = perf_counter()-started-self._solver.stats.preparation_s
         self.stats = NetworkPreparationStats(sum(s.assembly_s for s in sheets.values()),
-                                             composition_s, offset, self._solver.stats)
+                                             composition_s, offset, self._solver.stats,
+                                             sum(t.contact_selection_s for t in terminals.values()))
 
     @property
     def node_map(self):
@@ -238,6 +266,15 @@ class PreparedNetwork:
     def last_solve(self):
         """Low-level timing/RHS statistics for the last successful solve or transfer."""
         return self._solver.last_solve
+
+    @property
+    def contact_info(self):
+        """Caller-owned geometry/model summaries for prepared area contacts."""
+        return {name: dict(model=t.contact.model, bounds_m=t.contact.bounds_m,
+                           requested_area_m2=t.contact.requested_area_m2,
+                           covered_area_m2=t.contact.covered_area_m2,
+                           support_nodes=len(t.contact.nodes))
+                for name, t in self._terminals.items() if t.contact is not None}
 
     def solve(self, source_voltages, loads=None):
         """Return one checked case. loads maps terminal names to nonnegative sink A.
@@ -290,13 +327,18 @@ class PreparedNetwork:
                                   -float(external[self._term_maps[name][0]])]
         checks = balance_checks(self._matrix, voltage, self._fixed, sum(sheet_heat.values()),
                                 float(heat.sum()), current, rim_currents)
+        contact_v = {
+            name: float(voltage[self._term_maps[name][0]]) if term.weights is None
+            else float(term.weights @ voltage[self._term_maps[name]])
+            for name, term in self._terminals.items() if term.contact is not None}
         return NetworkResult(
             voltage, sheet_v, {name: voltage[m] for name, m in self._term_maps.items()},
             {name: float(external[np.unique(m)].sum()) for name, m in self._term_maps.items()},
             dict(zip(self._branches, map(float, branch_i))), sheet_heat,
             dict(zip(self._branches, map(float, heat))), checks,
             dict(linear_solve=solve_s, postprocess=perf_counter()-post_started,
-                 total=perf_counter()-started))
+                 total=perf_counter()-started),
+            contact_voltages_v=contact_v)
 
     def transfer_resistance(self, injection_terminals, observation_terminals=None, *, batch_size=32):
         """Optional dense Z in supplied name order, using bounded RHS batches.
