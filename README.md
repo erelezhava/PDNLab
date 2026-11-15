@@ -2,14 +2,17 @@
 
 Open-source DC power-integrity (IR drop) solver for PCBs. Own solver code, KiCad 10 boards as the first input, Apache-2.0.
 
-**Status: phase 0 merged through PR #7; phase 1 solver core started.** Experiment
-scripts solve one real-board net. Phase 1 has reusable sparse-LU solves,
+**Status: Phase 1 solver core accepted by Erekle on 2026-11-15.**
+Merged through [PR #8](https://github.com/erelezhava/PDNLab/pull/8) with
+[passing CI on main](https://github.com/erelezhava/PDNLab/actions/runs/43740365125).
+Experiment scripts solve one real-board net. Phase 1 has reusable sparse-LU solves,
 checked named-network composition and finite-area contact selection on meshes.
 IPC-2581 and per-pin terminal-model choices are confirmed by the maintainer;
 the production importer and automatic contact-boundary remeshing are not implemented.
 See [the result log](docs/DECISIONS.md) for measured results and limitations,
 and the [dependency inventory](docs/dependency-license-audit.md) for the
-current licences and packaging boundaries. Phase 1 is not complete.
+current licences and packaging boundaries. Production board integration remains
+Phase 2 work; Phase 1 acceptance covers the documented synthetic solver scope.
 
 See the [development plan](docs/project-plan.md) for scope, architecture,
 experiments and release gates.

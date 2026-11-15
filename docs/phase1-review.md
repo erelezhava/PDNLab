@@ -1,12 +1,12 @@
 # Phase 1 solver-core review
 
-Reviewed 2026-11-15 at local commit
+Initial code review: 2026-11-15 at local commit
 `e9453574361cac7716a1d1ca766f9154eaef6401` on `phase1-solver-core`.
 
-**Result / Recommendation: the implemented synthetic solver scope is ready
-for PR review; no additional coding blocker was identified in this scoped
-review. Recommendation: run PR CI, resolve any findings and ask Erekle to
-accept the phase-1 gate. Phase 1 is not declared closed by this document.**
+**Result / Recommendation: Erekle accepted the documented Phase 1 synthetic
+solver scope on 2026-11-15. PR #8 is merged and CI on the merged main commit
+passed. Recommendation: carry the limits below into Phase 2; acceptance does
+not establish production-import or physical-model validation.**
 
 ## Requirements and evidence
 
@@ -15,7 +15,7 @@ accept the phase-1 gate. Phase 1 is not declared closed by this document.**
 | FEM sheets, electrical ties, positive lumped/barrel resistors | Existing `fem.py` / `vias.py`; named composition in `network.py`; strip, annular and branching-via tests | Covered for supported synthetic inputs |
 | Fixed voltages and explicit current sinks | Prepared source membership, changing voltages/currents, tied or explicitly weighted terminals; malformed/unknown/floating inputs rejected | Covered for sources to a reference; arbitrary floating voltage sources are outside the MVP |
 | Stable package entry points | `solver.prepare_fixed_voltages`, `network.Network`, `contacts.select_area_contact`; existing one-shot FEM calls preserved | Available and documented; no external API compatibility guarantee beyond this development version |
-| Analytic accuracy at 0.5%, with tighter existing limits | Full suite and analytic examples recorded in `DECISIONS.md`; strip/network tests retain 1e-6 relative limits where applicable | Passes locally; CI acceptance remains outstanding |
+| Analytic accuracy at 0.5%, with tighter existing limits | Full suite and analytic examples recorded in `DECISIONS.md`; strip/network tests retain 1e-6 relative limits where applicable | Local evidence and merged-main CI pass; maintainer gate accepted |
 | Mesh convergence and independent conservation/power | Annuli, contacts and per-layer branching KCL; heat from triangle gradients and resistor drops; deliberate omitted-heat/wrong-current tests | Covered locally; self-consistency is not physical validation |
 | Prepare/factor once, solve specified currents directly | Prepared snapshot, LU-reuse tests, no default transfer extraction | Covered in package interfaces |
 | Optional batched transfer extraction | Actual RHS batch-shape and direct/transfer tests; named wrapper for equipotential terminals | Covered; dense output still scales with requested ports |
@@ -46,19 +46,22 @@ No new numerical solve, hardware measurement or private-board run was needed
 for this documentation/code-inspection review. It does not constitute an
 independent implementation or physical-model audit.
 
-## Remaining acceptance steps
+## Acceptance recorded on 2026-11-15
 
-1. Commit this review documentation and push `phase1-solver-core`.
-2. Open a PR targeting `main`. The current workflow runs on PRs and pushes to
-   `main`; pushing only the feature branch will not trigger it.
-3. Review CI's Python 3.11 result and analytic gates. Do not require the same
-   full local test count: CI currently omits KiCad and its optional native
-   integration may skip. Analytic/Gmsh checks must run.
-4. Erekle reviews and chooses whether to accept/merge the phase-1 scope.
-   No automatic merge is requested or performed.
+- Erekle merged [PR #8](https://github.com/erelezhava/PDNLab/pull/8) into
+  `main`, merge commit `a8dadf556bbabb91fa99e039cf5310ab5ef4519b`.
+- The [tests workflow on merged main](https://github.com/erelezhava/PDNLab/actions/runs/43740365125)
+  completed successfully. Its `pytest` job and `Run pytest -v` step both report
+  success; the Gmsh install step also succeeded. The workflow uses Python 3.11.
+- Erekle explicitly requested recording Phase 1 acceptance and the passing
+  CI result. This closes the documented synthetic solver-core phase, with the
+  carry-forward limits below retained.
 
-GitHub's check-runs lookup for the reviewed SHA returned “No commit found”
-during this review. Remote CI therefore has not been verified for this commit.
+The earlier missing-commit/CI-pending state is superseded by this merged-main
+evidence. Remote job/step conclusions were inspected, but detailed remote test
+counts were not retrieved; the local counts above are not CI counts. KiCad's
+optional native integration may skip on CI, which does not install KiCad.
+No numerical tests were rerun for this acceptance documentation update.
 
 ## Carry-forward limits
 
@@ -78,5 +81,5 @@ during this review. Remote CI therefore has not been verified for this commit.
   sources, remote-sense regulators, thermal and viewer work remain outside
   the completed synthetic scope.
 
-Recommendation: carry these limits into Phase 2 planning, without expanding
-the phase-1 PR solely to implement production ingestion or additional physics.
+Recommendation: carry these limits into Phase 2 planning; do not treat Phase 1
+acceptance as completion of production ingestion or additional physics.
