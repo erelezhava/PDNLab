@@ -55,6 +55,10 @@ fixed-node membership change; current and fixed-voltage values may change
 without preparation. The one-shot `fem.solve_fixed_voltages` remains compatible
 and delegates to this solver. Every component still needs a fixed node.
 Sources here are voltages to a reference, not arbitrary two-terminal sources.
+The input is a conservative nodal matrix, with ground represented explicitly;
+material nonzero row sums (including implicit ground shunts) are rejected.
+Each connected network is solved relative to one of its fixed voltages, then
+shifted back, reducing sensitivity to the rail's absolute voltage.
 
 Transfer extraction bounds full-field RHS/solution columns by `batch_size`,
 but its returned dense observation-by-injection matrix can still be large.
@@ -67,6 +71,9 @@ sparse-array bytes; it does not measure peak RSS or native LU workspace.
 `system.last_solve` records elapsed time and RHS batching. Independent loss
 integration and conservation checks remain in `pdnlab_dc.checks` and require
 original sheet geometry and branch data from the caller.
+Checks normalize reactions and terminal power to the same per-network origin.
+They require both global and per-network current balance; independent loss
+integration and per-via checks retain their existing tolerances.
 
 Run the synthetic performance probe (no private boards):
 
@@ -74,10 +81,10 @@ Run the synthetic performance probe (no private boards):
 uv run python experiments/phase1_solver_benchmark.py
 ```
 
-The primary probe solves relative to zero. A separate 3.3 V probe exposes a
-known common-mode sensitivity in the existing reaction-current/power check;
-on the larger measured synthetic case its power gate fails. See the result
-log before interpreting absolute-voltage conservation at small losses.
+The primary probe solves relative to zero. A separate 3.3 V probe now gates
+reference invariance and conservation. The formerly failing power-check case
+and its correction are recorded in the result log. Very large common-mode
+voltages relative to the drop remain limited by floating-point resolution.
 The real-board experiment's transfer/scenario workflow has not been migrated.
 
 ## Phase 0 experiments

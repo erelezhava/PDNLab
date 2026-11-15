@@ -11,6 +11,7 @@ as a resistor of conductance g * cot(opposite angle) / 2.
 
 import numpy as np
 import scipy.sparse as sp
+from scipy.sparse.csgraph import connected_components
 
 
 def _indices(values, size, name, ndim):
@@ -21,6 +22,34 @@ def _indices(values, size, name, ndim):
     if raw.dtype.kind not in "iu" or np.any(raw < 0) or np.any(raw >= size):
         raise ValueError(f"{name} must contain integer indices in [0, {size})")
     return raw.astype(np.int64)
+
+
+def _network_references(matrix, fixed_nodes):
+    """Check a conservative nodal network and choose one origin per component.
+
+    Ground is an explicit node, not an implicit shunt. Only roundoff-sized
+    row sums are accepted before using the constant-voltage nullspace. The
+    64-epsilon bound relative to each row's absolute sum allows accumulation
+    in FEM assembly/ties; it is not a current/power acceptance tolerance.
+    """
+    row_sum = np.asarray(matrix.sum(axis=1)).ravel()
+    row_scale = np.asarray(abs(matrix).sum(axis=1)).ravel()
+    if (not np.isfinite(row_sum).all() or not np.isfinite(row_scale).all()
+            or np.any(np.abs(row_sum) > 64*np.finfo(float).eps*row_scale)):
+        raise ValueError("conductance matrix must have zero row sums within roundoff; "
+                         "use an explicit fixed node for ground")
+    graph = matrix
+    if np.any(matrix.data == 0):
+        graph = matrix.copy()
+        graph.eliminate_zeros()
+    count, labels = connected_components(graph, directed=False)
+    anchors = np.full(count, matrix.shape[0], dtype=int)
+    np.minimum.at(anchors, labels[fixed_nodes], fixed_nodes)
+    missing = anchors == matrix.shape[0]
+    if np.any(missing):
+        floating = np.flatnonzero(missing[labels])
+        raise ValueError(f"unanchored component: nodes {floating[:10].tolist()}")
+    return anchors[labels], labels
 
 
 def assemble_sheet(nodes, triangles, sheet_conductance):

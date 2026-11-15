@@ -288,8 +288,9 @@ Recommended sequence, retaining the validated package primitives:
    preparation/solve time and sparse storage. First increment implemented;
    measured results and limits are in `DECISIONS.md`.
 2. Consolidate synthetic sheet/tie/barrel/terminal composition and independent
-   conservation reporting. Address the measured common-mode power-check
-   sensitivity before relying on absolute-voltage checks at small losses.
+   conservation reporting. The measured common-mode power-check sensitivity
+   has been corrected and regression-tested using relative solves/reactions
+   and per-network current checks; see the result log for limits.
 3. Implement finite-area contact selection and analytic/convergence coverage;
    retain point-contact mesh-dependence warnings. Continue analytic gates at
    0.5% or existing tighter case-specific limits.

@@ -5,8 +5,8 @@ Samples at untied mesh vertices exercise RHS scaling only, not physical contact
 accuracy. Timings are observations, not performance acceptance thresholds.
 Each mesh is released before the next case is built.
 The primary probe uses zero source reference (negative voltages are drops).
-A separate 3.3 V probe records common-mode sensitivity of the existing checks;
-it is reported even if a conservation gate fails.
+A separate 3.3 V probe verifies reference invariance. Both probes must pass
+their conservation gates; a failure gives a nonzero exit status.
 """
 
 from dataclasses import asdict
@@ -52,13 +52,16 @@ def measure(nx, ny, ports=24, cases=8, batch_size=8):
         matrix, common_mode_v, left,
         sheet_losses(nodes, triangles, 35e-6/1.724e-8, common_mode_v).sum(),
         injected_current=cases*current)
+    shift_difference = float(np.max(np.abs(common_mode_v-3.3-voltage)))
+    if not common_mode_checks["passed"] or shift_difference > 1e-12:
+        raise RuntimeError("synthetic benchmark failed reference-invariance checks")
     return dict(nodes=len(nodes), triangles=len(triangles), ports=ports, cases=cases,
                 assembly_s=assembly_s, preparation=asdict(prepared.stats),
                 direct_cases_s=direct_s, last_direct=direct_stats,
                 transfer=transfer_stats, max_direct_transfer_difference_v=difference,
                 checks=checks, common_mode_probe=dict(
                     fixed_voltage_v=3.3, checks=common_mode_checks,
-                    max_shift_difference_v=float(np.max(np.abs(common_mode_v-3.3-voltage)))))
+                    max_shift_difference_v=shift_difference))
 
 
 def main():

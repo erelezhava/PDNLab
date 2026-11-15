@@ -6,8 +6,9 @@ catch errors in assembly, node mapping or loss bookkeeping.
 """
 
 import numpy as np
+import scipy.sparse as sp
 
-from .fem import _indices
+from .fem import _indices, _network_references
 
 
 def sheet_losses(nodes, triangles, sheet_conductance, voltages):
@@ -60,8 +61,11 @@ def balance_checks(matrix, voltages, fixed_nodes, sheet_loss_w, lumped_loss_w=0.
 
     Reactions at fixed nodes plus prescribed currents at free nodes define the
     external terminals. Positive current enters the network. Power delivered
-    is their signed sum v*i, including current sources and absorbing terminals.
-    Losses must be integrated independently by the caller.
+    is their signed sum (v-v_ref)*i, including current sources and absorbing
+    terminals. Each connected network uses one fixed node as its origin and
+    must independently conserve current. Losses are integrated independently
+    by the caller. Ground must be an explicit node; material row-sum defects
+    are rejected rather than hidden by reference normalization.
 
     rim_currents maps names to signed branch currents at that *layer's* rim:
     sheet plus every adjacent barrel segment, all using one sign convention.
@@ -76,6 +80,11 @@ def balance_checks(matrix, voltages, fixed_nodes, sheet_loss_w, lumped_loss_w=0.
     fixed = _indices(fixed_nodes, len(v), "fixed_nodes", 1)
     if len(np.unique(fixed)) != len(fixed):
         raise ValueError("fixed_nodes contains duplicates")
+    matrix = sp.csr_matrix(matrix, dtype=float)
+    if not np.isfinite(matrix.data).all():
+        raise ValueError("matrix must be finite")
+    references, labels = _network_references(matrix, fixed)
+    relative_v = v-v[references]
     loss = np.asarray([sheet_loss_w, lumped_loss_w], dtype=float)
     if loss.shape != (2,) or not np.isfinite(loss).all() or np.any(loss < 0):
         raise ValueError("losses must be finite nonnegative scalar powers")
@@ -88,7 +97,7 @@ def balance_checks(matrix, voltages, fixed_nodes, sheet_loss_w, lumped_loss_w=0.
         if prescribed.shape != v.shape or not np.isfinite(prescribed).all():
             raise ValueError("injected_current must be finite with shape (N,)")
         external[:] = prescribed
-    reaction = np.asarray(matrix @ v)
+    reaction = np.asarray(matrix @ relative_v)
     if not np.isfinite(reaction).all():
         raise ValueError("nodal currents must be finite")
     external[fixed] = reaction[fixed]
@@ -96,7 +105,16 @@ def balance_checks(matrix, voltages, fixed_nodes, sheet_loss_w, lumped_loss_w=0.
     sink = float(-external[external < 0].sum())
     current_error = abs(source - sink)
     current_limit = 1e-9 + rtol * source
-    delivered = float(v @ external)
+    component_source = np.bincount(labels, weights=np.maximum(external, 0))
+    component_sink = np.bincount(labels, weights=np.maximum(-external, 0))
+    component_error = np.abs(component_source-component_sink)
+    component_limit = 1e-9 + rtol*component_source
+    components = [dict(source_a=float(src), sink_a=float(snk),
+                       residual_a=float(err), tolerance_a=float(limit),
+                       passed=bool(err <= limit))
+                  for src, snk, err, limit in zip(component_source, component_sink,
+                                                 component_error, component_limit)]
+    delivered = float(relative_v @ external)
     dissipated = float(loss.sum())
     power_error = abs(delivered - dissipated)
     power_limit = 1e-9 + rtol * abs(delivered)
@@ -115,9 +133,12 @@ def balance_checks(matrix, voltages, fixed_nodes, sheet_loss_w, lumped_loss_w=0.
         relative_tolerance=rtol,
         current_balance=dict(source_a=source, sink_a=sink, residual_a=current_error,
                              tolerance_a=current_limit, passed=current_passed),
+        component_current_balance=components,
         power_balance=dict(delivered_w=delivered, sheet_loss_w=float(loss[0]),
                            lumped_loss_w=float(loss[1]), residual_w=power_error,
                            tolerance_w=power_limit, passed=power_passed),
         via_rims=rims,
-        passed=bool(current_passed and power_passed and all(x["passed"] for x in rims.values())),
+        passed=bool(current_passed and power_passed
+                    and all(x["passed"] for x in components)
+                    and all(x["passed"] for x in rims.values())),
     )

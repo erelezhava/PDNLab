@@ -1031,3 +1031,92 @@ No production importer, contact-area geometry builder, thermal or viewer work
 was performed. The real-board experiment still has its original transfer and
 scenario orchestration; migrating it and avoiding simultaneous coarse/fine
 model retention there remain follow-up work.
+
+## 2026-11-15 — Phase 1 increment 2: voltage-reference stability
+
+**Result / Recommendation: the previously failing 3.3 V synthetic probe now
+passes unchanged current/power gates. Recommendation: review this correction
+before continuing synthetic model composition. Phase 1 remains in progress.**
+
+Starting state verified: clean `phase1-solver-core`, HEAD `7a192f3`; Erekle
+created the branch and committed the first increment in his terminal. This
+entry supersedes the first increment's unresolved common-mode limitation for
+the tested cases, while retaining that entry as the original evidence.
+
+Isolation on the 6,601-node synthetic sheet from the preceding entry:
+
+- Maximum absolute matrix row sum: 2.2737e-12 S; total matrix sum:
+  1.48975e-9 S. An exact conservative sheet has zero row sums. Multiplying
+  their floating-point remainder by the rail voltage creates apparent leakage
+  in an absolute-voltage solve/reaction calculation.
+- At 80 mA per sample and 3.3 V, the old current residual is 4.7463e-9 A.
+  The raw signed-power residual is 1.5654e-8 W. Re-evaluating only the terminal
+  power with voltages relative to the source reduces it to 8.7277e-12 W;
+  current cancellation still needs correction.
+- The old zero-load 3.3 V case has a 4.7476e-9 A current residual, exceeding
+  its 1 nA floor. Merely centering the power calculation would not fix this.
+  The old 10 µA-per-sample case also fails current at 3.3 V.
+
+Correction:
+
+- Preparation selects one fixed-node reference per connected network.
+  `solve` applies fixed voltages relative to it, solves with the existing LU,
+  then restores absolute voltages. Changing the reference value still reuses
+  the factorization; different fixed voltages within a network remain valid.
+- `balance_checks` independently evaluates fixed-node reactions using relative
+  voltages, and terminal power using sum((v-v_ref)*external_current). Sheet
+  heat still comes from triangle gradients and lumped heat from branch drops.
+  No heat is substituted with a matrix quadratic form.
+- Global current, power and via-rim gates retain their existing tolerances.
+  Each connected network additionally passes its own current gate, exposed as
+  `component_current_balance`. This is necessary because net current must be
+  zero in each network for its power to be independent of its voltage origin;
+  opposite missing currents in separate networks must not cancel globally.
+- Before reference normalization, row sums must be zero within
+  64 × float64 epsilon × each row's absolute coefficient sum. This structural
+  roundoff bound permits FEM assembly/tie accumulation; it does not replace
+  or enlarge the current/power gate tolerances. Material defects raise
+  `ValueError`. Ground must be represented as an explicit fixed node;
+  reduced matrices with implicit ground shunts are outside this interface.
+  No matrix entry is modified by the reference validation.
+- The benchmark now requires the 3.3 V diagnostic to pass as well as its
+  zero-reference primary case, with nonzero exit status on failure.
+
+Measured corrected benchmark (same meshes, material, currents and Python/
+NumPy/SciPy versions as the preceding entry):
+
+| Nodes | 3.3 V global current residual (A) | 3.3 V power residual (W) | Power tolerance (W) | Largest difference after subtracting 3.3 V (V) |
+| --- | --- | --- | --- | --- |
+| 2,121 | 5.1115e-13 | 7.6588e-16 | 4.0555e-9 | 2.2204e-16 |
+| 6,601 | 3.7264e-12 | 5.2553e-15 | 4.0601e-9 | 2.2204e-16 |
+
+Both zero-reference and 3.3 V cases pass global current, per-network current
+and independent power gates. No vias are present in this performance probe;
+via-rim coverage comes from the existing analytic regressions.
+
+The new regression file covers the same sheet at 0, +3.3, -3.3, 12 and 48 V,
+each at 80 mA, 10 µA and zero per sample. Drops agree after shifting to within
+the asserted 1e-13 V absolute bound. Zero load produces exactly constant
+voltages and zero loss/current. Wrong load declarations still fail. Other
+cases cover distinct network references, mixed fixed voltages, material
+row-sum defects, and opposite component imbalances that would otherwise pass
+both global current and normalized power. Before the fix the new regression
+file produced 15 failures and 7 passes; afterward all 22 pass.
+
+Verification: final full suite **279 passed, no skips, 53.52 s**. Focused
+reference/prepared-solver/conservation/input tests: **91 passed, 1.43 s**.
+The synthetic benchmark exited successfully with both voltage references
+gating its status. `git diff --check` passes. Reproduce with:
+
+```sh
+.venv/bin/python -m pytest -q
+.venv/bin/python experiments/phase1_solver_benchmark.py
+```
+
+Not run: new private-board solves, remote CI, new reference-tool runs,
+hardware/full-3D validation or large-board peak-memory profiling. The original
+experiment scripts remain regression evidence. Arbitrarily large common-mode
+voltages relative to tiny drops still face floating-point representation
+limits; the tested voltage range is not an unlimited precision guarantee.
+No importer, contact builder, thermal or viewer changes were made. Work is
+uncommitted; no files were staged, pushed or merged by this session.

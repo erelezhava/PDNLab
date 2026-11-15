@@ -11,10 +11,9 @@ from time import perf_counter
 
 import numpy as np
 import scipy.sparse as sp
-from scipy.sparse.csgraph import connected_components
 from scipy.sparse.linalg import splu
 
-from .fem import _indices
+from .fem import _indices, _network_references
 
 
 def _sparse_bytes(matrix):
@@ -62,10 +61,7 @@ class PreparedSystem:
         self._fixed = _indices(fixed_nodes, n, "fixed_nodes", 1).copy()
         if len(np.unique(self._fixed)) != len(self._fixed):
             raise ValueError("fixed_nodes contains duplicates")
-        count, labels = connected_components(self._matrix, directed=False)
-        if len(np.unique(labels[self._fixed])) != count:
-            floating = np.flatnonzero(~np.isin(labels, labels[self._fixed]))
-            raise ValueError(f"unanchored component: nodes {floating[:10].tolist()}")
+        self._references, _ = _network_references(self._matrix, self._fixed)
         mask = np.ones(n, dtype=bool)
         mask[self._fixed] = False
         self._free = np.flatnonzero(mask)
@@ -104,6 +100,9 @@ class PreparedSystem:
 
         fixed_voltages is scalar or (number of fixed nodes,). Current is (N,)
         and is ignored at fixed nodes, whose voltage sources supply reactions.
+        Each connected network is solved relative to one fixed voltage, then
+        shifted back. This avoids multiplying FEM row-sum roundoff by the rail
+        voltage. The matrix must conserve current; ground is an explicit node.
         """
         started = perf_counter()
         n = self.stats.nodes
@@ -119,9 +118,12 @@ class PreparedSystem:
             raise ValueError("injected_current must be finite with shape (N,)")
         v = np.empty(n)
         v[self._fixed] = values
-        rhs = current[self._free] - self._coupling @ values
+        reference = v[self._references]
+        rhs = current[self._free] - self._coupling @ (values-reference[self._fixed])
         if self._lu is not None:
-            v[self._free] = self._solve_rhs(rhs)
+            v[self._free] = self._solve_rhs(rhs) + reference[self._free]
+        if not np.isfinite(v).all():
+            raise ValueError("solve produced nonfinite voltages")
         self.last_solve = SolveStats(perf_counter() - started, 1, 1, rhs.nbytes)
         return v
 
