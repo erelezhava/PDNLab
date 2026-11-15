@@ -1,8 +1,10 @@
 """Audit must compare values and geometry, rather than merely count XML tags."""
 
+from pathlib import Path
+
 import pytest
 
-from pdnlab_dc.ipc2581_inspect import inspect_export, parse_sexpr
+from pdnlab_dc.ipc2581_inspect import _source_data, inspect_export, parse_sexpr
 
 
 # Minimal structural fixtures for the audit, not fabrication-ready boards.
@@ -106,3 +108,35 @@ def test_malformed_native_syntax_rejected(text):
 
 def test_escaped_strings():
     assert parse_sexpr(r'(property "Reference" "a\"b\\c")')[2] == 'a"b\\c'
+
+
+# KiCad 10 (format 20260206) names nets inline and has no net id table.
+INLINE_NETS = (SOURCE.replace(' (net 0 "") (net 1 "PWR")\n', '')
+               .replace('(net 1 "PWR")', '(net "PWR")')
+               .replace('(zone (net 1)', '(zone (net "PWR")')
+               .replace('(layers "F.Cu" "B.Cu") (net 1)', '(layers "F.Cu" "B.Cu") (net "PWR")'))
+
+
+def test_inline_net_names_match_export(tmp_path):
+    assert "(net 1" not in INLINE_NETS and '(net "PWR")' in INLINE_NETS
+    report = audit(tmp_path, source=INLINE_NETS)
+    assert report["passed"]
+    assert report["matched_pin_net_mappings"] == 1
+
+
+def test_unknown_net_id_is_rejected(tmp_path):
+    with pytest.raises(ValueError, match="net table"):
+        audit(tmp_path, source=SOURCE.replace('(via (at 2 3) (drill 0.3) (layers "F.Cu" "B.Cu") (net 1)',
+                                              '(via (at 2 3) (drill 0.3) (layers "F.Cu" "B.Cu") (net 7)'))
+
+
+# Local-only boards live in tests/test boards/, which is git-ignored, so CI skips this.
+LOCAL_BOARDS = sorted((Path(__file__).parent / "test boards").glob("*/*.kicad_pcb"))
+
+
+@pytest.mark.skipif(not LOCAL_BOARDS, reason="no local test boards")
+@pytest.mark.parametrize("board", LOCAL_BOARDS, ids=lambda p: p.parent.name)
+def test_local_real_boards_parse(board):
+    data = _source_data(board)
+    assert data["pins"] and data["fills"] and data["vias"] and data["thicknesses"]
+    assert all(net for _layer, net, _poly in data["fills"])

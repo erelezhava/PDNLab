@@ -1,0 +1,4 @@
+# Local test boards (KiCad projects, IPC-2581 exports, generated meshes) stay out of git.
+# Everything in this folder is ignored except this file.
+*
+!.gitignore
