@@ -1406,3 +1406,66 @@ Phase 2 implementation is not started by this update.
 Verification: documentation consistency and `git diff --check` pass. No source,
 tests, dependencies or private board data changed. Documentation remains
 uncommitted in this checkout; no files were staged, pushed or merged.
+
+## 2026-11-15 — Phase 2 small task: importer boundary and model contract
+
+**Result / Recommendation: inspected the experimental reader's output and
+recorded a minimum neutral-model proposal in `phase2-board-model-contract.md`.
+Recommendation: implement only those records/validators as the next bounded
+increment, before migrating XML parsing. Erekle retains schema decisions.**
+
+Starting state: clean `docs/phase1-acceptance`, HEAD `050e702`. The current
+checkout contains the acceptance documentation; no branch ref was changed.
+Inspection covered `read_net_ipc2581` and its native-reader comparison shape.
+The contract explicitly separates SI conversion, coordinate transforms,
+per-layer copper, hole spans and electrical contacts, and unknown metadata
+from setup assumptions. It preserves the production/synthetic boundary.
+
+Verification: reader-field mapping and documentation consistency were checked;
+`git diff --check` passes. No code, dependency, private board or experiment was
+modified; no tests, numerical solves or new exports were run. The latest
+local suite remains the previously measured 336 passed, no skips. No production
+schema or KiCad 11 compatibility is claimed implemented. Work is uncommitted;
+no files were staged, pushed or merged.
+
+## 2026-11-15 — Phase 2 small task: immutable neutral records and validation
+
+**Result / Recommendation: neutral records and aggregate validation are
+implemented in `pdnlab_dc.board`. Focused tests: 44 passed in 0.39 s; full
+regression suite: 380 passed, no skips, 54.38 s. Recommendation: review this
+bounded model before the next XML adapter increment; production import is not
+implemented and the development schema is not declared frozen.**
+
+Starting checkout remained `docs/phase1-acceptance` at `050e702`, with the
+preceding contract/log edits already uncommitted. Those edits were preserved;
+no branch ref was changed because Git metadata remains read-only here.
+
+Implemented frozen source, copper-layer, net, copper-feature, physical-pad,
+circular-drill and aggregate board records. Constructors snapshot sequences,
+require finite SI dimensions and valid 2D polygon topology, and check unique
+IDs, net/layer/feature/drill references, increasing nonoverlapping layers and
+ordered drill spans. Source units/affine-transform provenance are recorded,
+not applied. Missing optional metadata and unassigned nets remain explicit.
+Copper outlines and drills stay separate; no setup-dependent hole correction
+or contacted-layer inference occurs.
+
+Separate physical pad IDs may share a structured component/pin identity,
+provided their net declarations agree. Different layer padstack shapes,
+polygon holes, disconnected polygon parts and explicit unknown plating are
+preserved. Tests cover these cases, immutable input snapshots, invalid geometry,
+nonfinite/nonpositive dimensions, malformed provenance, duplicate IDs, dangling
+or inconsistent references, and out-of-span copper. No automatic geometry
+repair, union, XML parsing, mesh generation or solver adapter was added.
+
+Validation commands:
+
+```sh
+.venv/bin/python -m pytest -q tests/test_board.py
+.venv/bin/python -m pytest -q
+```
+
+`git diff --check` passes. Existing analytic regressions reran with the full
+suite; no new real-board solve, export, standalone benchmark, remote CI or
+KiCad 11 compatibility run was performed. No dependency or private board data
+changed. README and the contract describe the development interface. Changes
+remain uncommitted; no files were staged, pushed or merged.
