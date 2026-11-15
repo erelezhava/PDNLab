@@ -36,3 +36,5 @@ def test_prepare_missing_tools_records_blocker_not_pass(tmp_path):
     directives = (tmp_path / "padne-directives.txt").read_text()
     assert "!padne VOLTAGE v=5V p=J2.1 n=J2.4" in directives
     assert "!padne CURRENT i=0.5A f=J7.1 t=J2.4" in directives
+    # padne reads a trailing "m" as milli, not metres: "25um" does not parse, "25u" is 25e-6 m.
+    assert "plating=25u undercut=0" in directives

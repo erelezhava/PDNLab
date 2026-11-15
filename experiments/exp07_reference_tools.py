@@ -81,7 +81,7 @@ def prepare(output_dir, board=DEFAULT_BOARD, padne="padne", kipi_root=None,
         "# Synthetic single-rail benchmark. All returns at source reference.\n"
         "!padne VOLTAGE v=5V p=J2.1 n=J2.4\n"
         "!padne CURRENT i=0.5A f=J7.1 t=J2.4\n"
-        f"!padne COPPER conductivity={1 / manifest['resistivity_ohm_m']:.12g} plating=25um undercut=0\n"
+        f"!padne COPPER conductivity={1 / manifest['resistivity_ohm_m']:.12g} plating=25u undercut=0\n"
         "!padne PROBE p=J2.1,J3.1,J4.1,J5.1,J6.1,J7.1,J8.1\n",
         encoding="utf-8",
     )

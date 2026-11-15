@@ -1,11 +1,15 @@
 # Experiment 7: external reference tools
 
-**Status: prepared, blocked on installation. No reference voltages recorded.**
+**Status (2026-11-15): padne is installed on the maintainer's machine and was
+run on one net of a local test board; see the 2026-11-15 entry in
+[DECISIONS.md](DECISIONS.md) and the section "padne on a local test board"
+below. The StickHub benchmark has not been run with either tool. KiPI is not
+installed.**
 
-The development terminal cannot resolve `github.com`; neither padne nor KiPI is
-installed. This is an environment blocker, not a solver result. The experiment
-must remain pending until both tools have been tried on the same board and
-their settings and results or specific tool failures have been recorded.
+The text below was written on 14 November in a development terminal that could
+not resolve `github.com`. The StickHub part of the experiment remains pending
+until the tools have been tried on that board and their settings and results
+or specific tool failures have been recorded.
 
 ## Install separately from PDNLab
 
@@ -121,6 +125,35 @@ material, plating and return treatment. Record the application version/commit,
 mesh settings, source current and voltage at each probe relative to J2.4.
 Export the report/settings before closing. Exact field names and extraction
 automation will be checked against the installed release before the run.
+
+## padne on a local test board
+
+This is the run recorded on 2026-11-15. It compares padne with the experiment 8
+result for one net, so `experiments/exp08_analyze_3v3.py` must have written its
+output directory first. `B` is the board's directory; test boards are not in
+the repository.
+
+```sh
+B="tests/test boards/test brd 1"
+reference-tools/padne-linux-x64 solve "$B/MAIN_MCU_STM32H743.kicad_pro" "$B/_exp07/solution.padne" \
+    --no-schematic-directives --directives "$B/_exp07/padne-directives.txt" 2>&1 | tee "$B/_exp07/padne-solve.log"
+reference-tools/padne-linux-x64 paraview "$B/_exp07/solution.padne" "$B/_exp07/vtu"
+reference-tools/padne-linux-x64 solve "$B/MAIN_MCU_STM32H743.kicad_pro" "$B/_exp07/solution_h015.padne" \
+    --mesh-size 0.15 --no-schematic-directives --directives "$B/_exp07/padne-directives.txt" 2>&1 | tee "$B/_exp07/padne-solve_h015.log"
+reference-tools/padne-linux-x64 paraview "$B/_exp07/solution_h015.padne" "$B/_exp07/vtu_h015"
+uv run python experiments/exp07_padne_compare.py "$B/MAIN_MCU_STM32H743.kicad_pcb" "$B/_exp08" \
+    "$B/_exp07/vtu" "$B/_exp07/vtu_h015" --output "$B/_exp07/padne-comparison.json"
+```
+
+The directive file holds one `VOLTAGE` for the source pins, one `CURRENT` per
+load pin returning to the source's negative pad, and one `COPPER` line. Lengths
+in `COPPER` are in metres with an SI prefix and no unit letter: `plating=25u`.
+`plating=25um` does not parse.
+
+The comparison script exits 1 if any pin fails gate 6 after referencing both
+tools to the plane voltage at the feed vias. It reports the raw comparison as
+well; on this board the raw comparison fails because the two tools model the
+source pads differently.
 
 ## Completion evidence
 
