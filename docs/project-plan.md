@@ -310,6 +310,10 @@ implementation remains future work. Production import, thermal and viewer are
 outside these increments. Historical experiments remain regression evidence;
 their real-board orchestration has not yet been migrated.
 
+The [phase-1 review](phase1-review.md) recommends PR review and CI before
+maintainer acceptance. No further coding blocker was identified in that scoped
+review; it does not close the phase or validate production/hardware behaviour.
+
 ### Phase 0 experiments
 
 Each experiment is small enough for one or two sittings. After each one, record

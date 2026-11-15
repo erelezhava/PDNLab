@@ -1335,3 +1335,35 @@ idealizations, not arbitrary board contacts. Not run: new private-board or
 padne/KiPI cases, remote CI, hardware/full-3D correlation or large-board peak
 memory/contact-scaling profiles. No thermal or viewer work. Changes remain
 uncommitted; no files were staged, pushed or merged by this session.
+
+## 2026-11-15 — Phase 1 scoped closeout review
+
+**Result / Recommendation: verified clean `phase1-solver-core` at `e945357`;
+the contact commit contains the expected eight files. No additional coding
+blocker was identified in this scoped review. Recommendation: review the PR,
+obtain passing analytic CI and let Erekle decide phase-1 acceptance/merge.**
+
+`docs/phase1-review.md` maps the approved synthetic solver requirements to
+implementation/tests, records remaining CI/maintainer acceptance steps and
+separates production/hardware/performance limitations from phase-1 evidence.
+The plan links to that review without declaring the phase closed.
+
+The latest measured full suite remains **336 passed, no skips, 56.12 s**;
+it was not rerun for this documentation/code-inspection review. No new
+numerical results are claimed. `git diff --check` was run and passes.
+Only the protective `.gitignore` is tracked beneath `tests/test boards/`;
+no private-board content was added or read for the review.
+
+GitHub's check-runs lookup for full SHA
+`e9453574361cac7716a1d1ca766f9154eaef6401` returned “No commit found”. The
+reviewed commit therefore has no verified remote CI result here. The workflow
+runs on PRs and pushes to `main`, not standalone feature-branch pushes; push
+the branch and open a PR to exercise the Python 3.11/Gmsh analytic gate.
+KiCad's optional native integration may skip on CI, which does not install
+KiCad; a matching full local test count is not the acceptance requirement.
+
+No source/test code, dependency, private board or physics model was changed.
+No new numerical solve, performance profile, remote CI run, reference-tool
+comparison, hardware or 3D validation was performed. This is a scoped review,
+not an independent physical-model audit. Review documentation is uncommitted;
+no files were staged, pushed or merged by this session.
