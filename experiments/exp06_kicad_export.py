@@ -39,6 +39,17 @@ def experiment(board, output_dir, executable="kicad-cli", strict=False):
         raise RuntimeError(f"KiCad export failed:\n{exported.stdout}\n{exported.stderr}")
     report = inspect_export(board, xml)
     geometry = inspect_geometry(board, xml)
+    if report["passed"] and geometry["passed"]:
+        report["route_decision"] = (
+            "Export coverage audit passed, including tracks, pad copper and pad holes, "
+            "for this board and exporter version. Recommendation: consider IPC-2581 "
+            "as the importer route; maintainer confirmation is pending."
+        )
+    else:
+        report["route_decision"] = (
+            "Export coverage audit incomplete or failed. Recommendation: investigate "
+            "the reported mismatches and unsupported content before choosing the importer route."
+        )
     report.update(kicad_version=version, source_board=str(board), export_command=command, geometry=geometry)
     (output_dir / "results.json").write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
     for gate, passed in report["gates"].items():
