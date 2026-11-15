@@ -933,3 +933,437 @@ not claimed complete.
 Verification for this closeout: documentation consistency and `git diff --check`; no tests or numerical solves rerun. The last measured full suite is
 226 passed, no skips. No source code or private board changed. Phase 1 has
 not started; the remaining step is maintainer review/merge of this branch.
+
+## 2026-11-15 — Phase 1 increment 1: reusable prepared sparse solver
+
+**Result / Recommendation: baseline and final regression suites pass; reusable
+LU and bounded transfer RHS batches are implemented. The larger absolute-voltage
+probe exposes a pre-existing power-check failure. Recommendation: review this
+increment, then address common-mode conservation sensitivity before extending
+synthetic model composition and finite-area contacts. Phase 1 is not complete.**
+
+Starting state: clean working tree on `exp8-ipc2581-route`, HEAD
+`23b7274f6e22a2781cb7e143057d8de209b77786`. GitHub reports PR #7 merged at
+`eb052c029fce61ff37e2a320319655593d5646c0`; its tree
+`0bd38f00cfc6c0d6e7abefb15b950c8acda2d426` equals the local HEAD tree.
+Thus the checkout contains the merged content, but not the merge commit in
+its local history. No repository-specific instruction file was found in the
+checkout or its checked parent locations; the conversation's rules apply.
+
+`git fetch origin main` and `git switch -c phase1-solver-core` both failed
+because `.git` is read-only in this session. The requested local branch could
+not be created. Changes remain uncommitted on the existing checkout; nothing
+was staged, pushed or merged. Private boards were not modified or staged.
+
+Implementation:
+
+- Keep validated assembly, node ties, resistor stamps, barrel formula and
+  independent loss/conservation functions in their existing package modules.
+- Add `pdnlab_dc.solver.prepare_fixed_voltages(matrix, fixed_nodes)` returning
+  a `PreparedSystem`. Preparation snapshots inputs, checks anchoring and
+  factors the free matrix once with sparse LU. `solve` accepts changing fixed
+  voltages and signed current vectors, without transfer extraction. A sink is
+  negative current. Conductance or fixed-membership changes require reprepare.
+- Preserve `fem.solve_fixed_voltages` as a one-shot compatibility wrapper;
+  existing experiments exercise the new solver without changing their scripts.
+- Make transfer extraction explicit, with bounded RHS/full-field column batches
+  and selected observation nodes. The returned dense transfer matrix still
+  grows with observations × injections. Direct and transfer calls share LU.
+- Report preparation time (including factorization), factorization time, solve
+  time, sparse nonzeros/array bytes and maximum RHS batch bytes. Sparse bytes
+  count G, fixed coupling and exposed L/U arrays; they exclude opaque native
+  storage, permutations, temporary workspace, Python overhead and peak RSS.
+  No large-board bottleneck or speedup is established by these probes.
+
+Validation commands used the existing virtual environment directly because
+`uv run` could not write its default cache in this session:
+
+```sh
+.venv/bin/python -m pytest -q
+.venv/bin/python experiments/phase1_solver_benchmark.py
+```
+
+Baseline: **226 passed, no skips, 43.44 s**. Final suite: **257 passed, no skips,
+43.02 s**. All existing analytic, mesh-convergence and conservation regressions
+ran. The new three-layer synthetic strip/barrel case has intermediate-layer
+branching, two mesh resolutions and two loads; terminal drops and barrel
+currents meet its tighter 1e-6 relative gate. Independent triangle loss,
+resistor loss and all three rim KCL checks pass. New contract tests count one
+factorization across repeated solves/transfer extraction, verify input snapshot
+isolation, direct/transfer equivalence, actual RHS batch shapes, all-fixed and
+multiple-fixed cases, and invalid-input rejection. No tolerance was relaxed.
+
+Synthetic probe: 100 × 20 mm, 35 µm copper, rho = 1.724e-8 ohm metre,
+source on the left edge at zero reference, 24 mesh-vertex current samples,
+eight direct cases (10 to 80 mA per sample), transfer batch size eight.
+Each mesh is released before constructing the next. These vertex samples
+exercise scaling, not physical contact accuracy. The table is one final local
+invocation after pytest ended; it is not a statistical performance benchmark.
+Python 3.14.4, NumPy 2.5.4, SciPy 1.18.1.
+
+| Nodes / free | Triangles | Preparation incl. LU (ms) | LU (ms) | Eight direct cases (ms) | 24-column transfer (ms) | Sparse array bytes | Maximum transfer RHS bytes |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 2,121 / 2,100 | 4,000 | 8.263 | 5.862 | 2.884 | 4.699 | 980,860 | 134,400 |
+| 6,601 / 6,560 | 12,800 | 36.721 | 31.689 | 16.391 | 19.224 | 4,592,636 | 419,840 |
+
+Matrix/factor nonzeros: 10,361 / 68,548 and 32,601 / 341,316. The corresponding
+single direct RHS arrays use 16,800 and 52,480 bytes. Largest direct-versus-
+transfer voltage differences are 8.67e-19 and 2.17e-18 V. Current residuals
+are 3.43e-13 and 2.65e-12 A; independently integrated power residuals are
+6.97e-16 and 5.18e-15 W. Both zero-reference probes pass their conservation gates.
+
+**Measured limitation:** the initial probe used 3.3 V. On the 6,601-node case,
+its current residual is 4.75e-9 A (passes) but its power residual is 1.5654e-8 W,
+above the 4.0601e-9 W limit (fails). The maximum voltage difference after
+subtracting the 3.3 V shift is only 7.05e-12 V. Running the original HEAD's
+`spsolve` implementation independently on that same synthetic case also fails
+power: residual 1.3338e-8 W versus limit 4.0601e-9 W. This is not introduced by
+the reusable LU API. Common-mode roundoff in reactions and signed terminal
+power is the likely explanation; it has not been fully isolated or corrected.
+The benchmark reports the 3.3 V diagnostic explicitly, including its failed
+gate, alongside the zero-reference primary case. No check is weakened or
+silently treated as passing. Recommendation: make reaction/power evaluation
+numerically stable under a reference shift, with a regression for this case.
+
+Not run: remote CI, new private-board solves, new padne/KiPI runs, hardware or
+full-3D validation, large-board/peak-RSS profiling or an iterative backend.
+No production importer, contact-area geometry builder, thermal or viewer work
+was performed. The real-board experiment still has its original transfer and
+scenario orchestration; migrating it and avoiding simultaneous coarse/fine
+model retention there remain follow-up work.
+
+## 2026-11-15 — Phase 1 increment 2: voltage-reference stability
+
+**Result / Recommendation: the previously failing 3.3 V synthetic probe now
+passes unchanged current/power gates. Recommendation: review this correction
+before continuing synthetic model composition. Phase 1 remains in progress.**
+
+Starting state verified: clean `phase1-solver-core`, HEAD `7a192f3`; Erekle
+created the branch and committed the first increment in his terminal. This
+entry supersedes the first increment's unresolved common-mode limitation for
+the tested cases, while retaining that entry as the original evidence.
+
+Isolation on the 6,601-node synthetic sheet from the preceding entry:
+
+- Maximum absolute matrix row sum: 2.2737e-12 S; total matrix sum:
+  1.48975e-9 S. An exact conservative sheet has zero row sums. Multiplying
+  their floating-point remainder by the rail voltage creates apparent leakage
+  in an absolute-voltage solve/reaction calculation.
+- At 80 mA per sample and 3.3 V, the old current residual is 4.7463e-9 A.
+  The raw signed-power residual is 1.5654e-8 W. Re-evaluating only the terminal
+  power with voltages relative to the source reduces it to 8.7277e-12 W;
+  current cancellation still needs correction.
+- The old zero-load 3.3 V case has a 4.7476e-9 A current residual, exceeding
+  its 1 nA floor. Merely centering the power calculation would not fix this.
+  The old 10 µA-per-sample case also fails current at 3.3 V.
+
+Correction:
+
+- Preparation selects one fixed-node reference per connected network.
+  `solve` applies fixed voltages relative to it, solves with the existing LU,
+  then restores absolute voltages. Changing the reference value still reuses
+  the factorization; different fixed voltages within a network remain valid.
+- `balance_checks` independently evaluates fixed-node reactions using relative
+  voltages, and terminal power using sum((v-v_ref)*external_current). Sheet
+  heat still comes from triangle gradients and lumped heat from branch drops.
+  No heat is substituted with a matrix quadratic form.
+- Global current, power and via-rim gates retain their existing tolerances.
+  Each connected network additionally passes its own current gate, exposed as
+  `component_current_balance`. This is necessary because net current must be
+  zero in each network for its power to be independent of its voltage origin;
+  opposite missing currents in separate networks must not cancel globally.
+- Before reference normalization, row sums must be zero within
+  64 × float64 epsilon × each row's absolute coefficient sum. This structural
+  roundoff bound permits FEM assembly/tie accumulation; it does not replace
+  or enlarge the current/power gate tolerances. Material defects raise
+  `ValueError`. Ground must be represented as an explicit fixed node;
+  reduced matrices with implicit ground shunts are outside this interface.
+  No matrix entry is modified by the reference validation.
+- The benchmark now requires the 3.3 V diagnostic to pass as well as its
+  zero-reference primary case, with nonzero exit status on failure.
+
+Measured corrected benchmark (same meshes, material, currents and Python/
+NumPy/SciPy versions as the preceding entry):
+
+| Nodes | 3.3 V global current residual (A) | 3.3 V power residual (W) | Power tolerance (W) | Largest difference after subtracting 3.3 V (V) |
+| --- | --- | --- | --- | --- |
+| 2,121 | 5.1115e-13 | 7.6588e-16 | 4.0555e-9 | 2.2204e-16 |
+| 6,601 | 3.7264e-12 | 5.2553e-15 | 4.0601e-9 | 2.2204e-16 |
+
+Both zero-reference and 3.3 V cases pass global current, per-network current
+and independent power gates. No vias are present in this performance probe;
+via-rim coverage comes from the existing analytic regressions.
+
+The new regression file covers the same sheet at 0, +3.3, -3.3, 12 and 48 V,
+each at 80 mA, 10 µA and zero per sample. Drops agree after shifting to within
+the asserted 1e-13 V absolute bound. Zero load produces exactly constant
+voltages and zero loss/current. Wrong load declarations still fail. Other
+cases cover distinct network references, mixed fixed voltages, material
+row-sum defects, and opposite component imbalances that would otherwise pass
+both global current and normalized power. Before the fix the new regression
+file produced 15 failures and 7 passes; afterward all 22 pass.
+
+Verification: final full suite **279 passed, no skips, 53.52 s**. Focused
+reference/prepared-solver/conservation/input tests: **91 passed, 1.43 s**.
+The synthetic benchmark exited successfully with both voltage references
+gating its status. `git diff --check` passes. Reproduce with:
+
+```sh
+.venv/bin/python -m pytest -q
+.venv/bin/python experiments/phase1_solver_benchmark.py
+```
+
+Not run: new private-board solves, remote CI, new reference-tool runs,
+hardware/full-3D validation or large-board peak-memory profiling. The original
+experiment scripts remain regression evidence. Arbitrarily large common-mode
+voltages relative to tiny drops still face floating-point representation
+limits; the tested voltage range is not an unlimited precision guarantee.
+No importer, contact builder, thermal or viewer changes were made. Work is
+uncommitted; no files were staged, pushed or merged by this session.
+
+## 2026-11-15 — Phase 1 increment 3: named synthetic network composition
+
+**Result / Recommendation: named composition passes analytic strip, branching
+three-layer barrel and annular-via checks. Recommendation: review this bounded
+interface before adding geometry-based finite-area contacts. No phase-1
+closeout or production-import readiness is claimed.**
+
+Starting state verified: clean `phase1-solver-core`, HEAD `42adc63`; Erekle
+committed the reference-stability correction. Local baseline was rerun:
+**279 passed, no skips, 50.78 s**. No additional repository instruction file
+was found. The conversation's project rules continue to apply.
+
+`pdnlab_dc.network.Network` composes the existing validated package primitives:
+
+- Named sheet meshes/materials, named disjoint terminal selections and named
+  positive lumped branches. Equipotential terminals tie their selected nodes;
+  explicit nonnegative node weights instead leave the selection untied and
+  allocate current in that exact node order. Untied groups do not receive an
+  implicit equal allocation. A bare vertex remains a mathematical point;
+  no contact geometry is constructed by this increment.
+- Barrel segments use the existing axial formula between separate rim
+  terminals on distinct sheets. No common cross-layer rim node is created.
+  Each declared rim must have an incident branch. The caller supplies the
+  contacted sheets, layer-centre spacing and copper radii.
+- Preparation snapshots the builder and fixes the source-terminal membership.
+  Repeated cases specify those source voltages and nonnegative named sink
+  currents, with no implicit transfer extraction. Unknown/malformed loads,
+  loads at fixed sources, overlapping terminal selections, invalid branch
+  endpoints and unanchored copper raise errors. No islands are silently dropped.
+- Results preserve maps from original sheet nodes to electrical unknowns and
+  report electrical/sheet/terminal voltages, signed external terminal currents,
+  a-to-b branch currents, independently integrated sheet/branch loss, solve/
+  postprocessing timing and conservation checks. Rim KCL includes sheet current,
+  every adjacent branch, and any external source/sink directly at the rim.
+  The result's `passed` follows all checks; failures are returned explicitly.
+- Optional named-terminal transfer extraction delegates to the existing
+  bounded-RHS method for equipotential terminals. Untied groups have multiple
+  voltages and are explicitly unsupported by this initial transfer wrapper.
+  Preparation/last-solve instrumentation is exposed. Solver sparse bytes exclude
+  the composition wrapper's check matrix, original sheet matrices, geometry
+  and maps; whole-model or peak-RSS memory is not measured.
+
+Validation retains the 0.5% analytic gate and tighter existing case limits.
+New strip/drop/current/loss/transfer comparisons use 1e-6 relative where
+applicable. The unit-square unequal-load case has an independent four-edge
+resistor reference: fractions 0.25/0.75 give nodal voltages -5/6 and -7/6 V
+and loss 13/12 W at a 1 A sink. This would fail if the selection were tied
+or silently assigned equal currents. Additional cases verify signed current
+from two voltage sources, reversed resistor orientation, snapshot isolation,
+one LU across load/reference changes and transfer extraction, invalid inputs,
+and an externally driven rim. Deliberately omitting barrel heat makes power
+fail while current/rim checks pass.
+
+`experiments/phase1_network_cases.py` is a runnable example using only this
+interface, not manual sparse wiring. Three 50 × 5 mm strips have copper
+thicknesses 18/35/70 µm and rho = 1.724e-8 ohm metre. Two barrel segments
+use 0.15/0.175 mm copper radii and 0.8/0.05 mm lengths. The source is the top
+strip's outer pad at 3.3 V; the middle and bottom pads draw 0.1/0.2 A,
+then 0.2/0.4 A. Expected segment currents are 0.3/0.2 A, then 0.6/0.4 A.
+References use independent strip and annular-area barrel formulas.
+
+| Strip cells per layer | Geometric / electrical nodes | Middle drop at first load (mV) | Bottom drop at first load (mV) | Largest relative drop error across both loads |
+| --- | --- | --- | --- | --- |
+| 8 × 3 | 108 / 90 | 3.528001868 | 3.534755914 | 2.8464e-13 |
+| 16 × 6 | 357 / 321 | 3.528001868 | 3.534755914 | 3.4714e-13 |
+
+Across these four direct cases: maximum relative branch-current error
+3.3396e-11; maximum global current residual 4.4009e-13 A; independent power
+residual 1.2065e-15 W; per-layer rim residual 8.0096e-12 A. All checks pass.
+The hand-made strip fields are exact for linear FEM up to roundoff; this
+near-zero error is not evidence for general geometric or physical accuracy.
+Only numerical/physical checks gate the example; no timing threshold is claimed.
+
+The composed annular-via test uses two separately meshed annuli, outer radii
+1.5/1.0 mm, 35/18 µm sheets, the same copper radii, a 1.6 mm barrel and a
+0.25 A sink. Against ring + barrel + ring, measured resistance errors are
+0.0226758% at h = 0.1 mm (1,438 geometric nodes) and 0.00329075% at h =
+0.05 mm (5,333 nodes). Both meet 0.5% and error decreases on refinement.
+Current, power and both layer-rim checks pass. Each level's model/factors are
+released before building the next; only scalar summaries survive. Gmsh is
+still invoked externally. No existing experiment script was migrated.
+
+Verification: final full suite **311 passed, no skips, 50.81 s**; focused
+composition tests **32 passed, 2.22 s**. The runnable example exits successfully
+with all four cases passing. `git diff --check` passes. Commands:
+
+```sh
+.venv/bin/python -m pytest -q
+.venv/bin/python -m pytest -q -s tests/test_network.py
+.venv/bin/python experiments/phase1_network_cases.py
+```
+
+Not run: production import or new private-board scenarios, new padne/KiPI or
+full-3D comparisons, measurements, large-board/peak-memory profiling or remote
+CI. No thermal or viewer changes. Terminal selections currently belong to
+one sheet and may not overlap; geometry-based finite contacts, overlap/alias
+resolution and importer integration remain later work. Changes are uncommitted;
+no files were staged, pushed or merged by this session.
+
+## 2026-11-15 — Phase 1 increment 4: finite-area contact selection
+
+**Result / Recommendation: explicit finite electrodes and uniform-current area
+loads pass analytic/convergence checks with unchanged electrical gates.
+Recommendation: review these bounded contact models and remaining phase-1
+coverage before proposing phase-1 closeout. No production contact/importer or
+3D interface validation is claimed.**
+
+Starting state verified: clean `phase1-solver-core`, HEAD `c9a3f2c`; Erekle
+committed named network composition. Baseline rerun: **311 passed, no skips,
+50.70 s**. No additional repository instruction file was found. Shapely 2.2.0
+was already installed and declared; no dependency was added.
+
+`pdnlab_dc.contacts.select_area_contact` and `Network.add_contact` accept an
+explicit positive-area 2D polygon at mesh coordinates in metres. The entire
+region must lie on nonoverlapping copper elements. Missing copper, contact
+holes lying in mesh voids and overlapping mesh elements within a contact are
+checked geometrically; the area is not silently clipped to the surviving
+copper. Coverage uses a 1e-10 relative geometric tolerance, separate from and
+without relaxing analytic/current/power gates.
+
+The two explicit models are different physical idealizations:
+
+- `equipotential`: an ideal electrode shorts only its specified area. Its
+  boundary must conform to existing mesh edges (a union of full triangles).
+  Materially cut elements raise with a request for a conforming mesh, instead
+  of using nearest vertices or enlarging the electrode. It supports sources,
+  sinks, branch endpoints and the existing optional transfer interface.
+- `uniform_current`: the load has uniform prescribed current per area and
+  leaves copper untied. Each triangle is clipped against the region. For its
+  linear shape functions, integral(N_i) = clipped_area × N_i(clipped_centroid),
+  which produces conservative nodal load fractions even for nonconforming
+  patches, holes and multi-piece intersections. Support vertices may lie
+  outside the polygon; this is FEM load integration, not contact enlargement.
+  The same weights evaluate the area-average copper voltage. It is a sink
+  model, not an equipotential voltage source or a single-node transfer port.
+
+Prepared models expose scalar geometry/model summaries via `contact_info`;
+`NetworkResult.contact_voltages_v` reports electrode voltage or the area mean.
+The original selected-node voltage output remains available. Contact-selection
+time is recorded separately from sheet assembly, composition and LU. No
+whole-model memory or bottleneck claim is made. Existing snapshot and LU reuse
+behaviour is retained. No existing experiment script or core check was removed.
+
+Validation includes a positive-area patch entirely inside one triangle with
+no mesh vertices inside it: its exact load fractions are 0.5/0.25/0.25, with
+either triangle orientation. An asymmetric polygon hole verifies the exact
+mean of a linear field. Positioned full-width electrodes give the analytic
+strip resistance across their actual gap, including translated coordinates;
+their fields/loss/transfer tests keep a 1e-6 relative limit. Invalid regions,
+bad meshes, unresolved electrode edges and overlapping coarse support are
+rejected. Failed selection leaves the builder unchanged.
+
+Measured example: `experiments/phase1_contact_cases.py`, rho = 1.724e-8 ohm
+metre, 35 µm copper, 1 A numerical sink per case. Each model/factorization is
+released before the next level, with only scalar summaries/checks retained.
+No external mesher or private board is needed for these examples.
+
+**Finite circular electrode.** A fixed 128-sided contact polygon of radius
+1.25 mm is placed at the centre of a 5 mm-radius polygonal disk. The outer
+boundary is at 0 V. Copper under the electrode is tied; outside it the
+reference is rho × ln(5/1.25)/(2πt) = 0.1086787928 mΩ. The polygon is unchanged
+across radial refinements; circle-reference error includes polygon geometry.
+
+| Radial cells | Mesh nodes | Electrode resistance (mΩ) | Relative circle-reference error | Mathematical point diagnostic (mΩ) |
+| --- | --- | --- | --- | --- |
+| 16 | 2,049 | 0.1084677681 | 0.1941728% | 0.3712254947 |
+| 32 | 4,097 | 0.1086092683 | 0.0639724% | 0.4255444197 |
+| 64 | 8,193 | 0.1086450184 | 0.0310773% | 0.4798705130 |
+
+All finite-electrode levels meet 0.5% and error decreases. The point column
+instead draws 1 A at the centre vertex alone, with no area model. Its voltage
+keeps growing; each halving's increment matches rho × ln(2)/(2πt) within the
+test's 1% diagnostic limit. Those values are not physical contact-resistance
+predictions. Both types pass independent numerical current/power checks.
+
+**Uniform-current patch.** A 50 × 5 mm strip has a source electrode covering
+x = 0 to 5 mm at 3.3 V and a full-width uniform sink patch x = 20.3 to
+30.7 mm. Its edges cut the load mesh triangles. Let a = 20.3 mm, d = 10.4 mm
+and x_s = 5 mm. Lateral current is constant before a and falls linearly to
+zero across d. Integrating its square gives loss/I² and mean drop/I equal to
+(a-x_s+d/3)/(gW) = 1.8487847619 mΩ, where g = t/rho.
+
+| Cells | Mesh nodes | Area-mean drop / I (mΩ) | Relative error |
+| --- | --- | --- | --- |
+| 40 × 8 | 369 | 1.8476518402 | 0.0612793% |
+| 80 × 16 | 1,377 | 1.8485015270 | 0.0153201% |
+| 160 × 32 | 5,313 | 1.8487132568 | 0.00386768% |
+
+Both mean-voltage and independently integrated heat errors meet 0.5% at all
+levels and decrease with refinement. Across all nine example cases, maximum
+global current residual is 3.7681e-12 A and power residual is 3.0572e-15 W.
+No vias are present in these contact examples; existing via regressions remain.
+The README's finite-contact example was also run successfully.
+
+Verification: final full suite **336 passed, no skips, 56.12 s**. Focused
+contact/composition tests: **57 passed, 3.97 s** (25 new contact/mesh tests).
+The example exits successfully with all nine cases, finite-error convergence
+and the point-growth diagnostic passing. `git diff --check` passes. Commands:
+
+```sh
+.venv/bin/python -m pytest -q
+.venv/bin/python -m pytest -q -s tests/test_contacts.py tests/test_network.py
+.venv/bin/python experiments/phase1_contact_cases.py
+```
+
+Limits: no automatic contact-boundary remeshing, pad/importer integration,
+contact resistivity, pressure-dependent distribution or 3D interface model.
+The copper solver still requires disjoint terminal support. Disjoint physical
+contacts sharing coarse basis vertices must be refined; overlapping selections
+are not silently merged. Accuracy is established only for these synthetic
+idealizations, not arbitrary board contacts. Not run: new private-board or
+padne/KiPI cases, remote CI, hardware/full-3D correlation or large-board peak
+memory/contact-scaling profiles. No thermal or viewer work. Changes remain
+uncommitted; no files were staged, pushed or merged by this session.
+
+## 2026-11-15 — Phase 1 scoped closeout review
+
+**Result / Recommendation: verified clean `phase1-solver-core` at `e945357`;
+the contact commit contains the expected eight files. No additional coding
+blocker was identified in this scoped review. Recommendation: review the PR,
+obtain passing analytic CI and let Erekle decide phase-1 acceptance/merge.**
+
+`docs/phase1-review.md` maps the approved synthetic solver requirements to
+implementation/tests, records remaining CI/maintainer acceptance steps and
+separates production/hardware/performance limitations from phase-1 evidence.
+The plan links to that review without declaring the phase closed.
+
+The latest measured full suite remains **336 passed, no skips, 56.12 s**;
+it was not rerun for this documentation/code-inspection review. No new
+numerical results are claimed. `git diff --check` was run and passes.
+Only the protective `.gitignore` is tracked beneath `tests/test boards/`;
+no private-board content was added or read for the review.
+
+GitHub's check-runs lookup for full SHA
+`e9453574361cac7716a1d1ca766f9154eaef6401` returned “No commit found”. The
+reviewed commit therefore has no verified remote CI result here. The workflow
+runs on PRs and pushes to `main`, not standalone feature-branch pushes; push
+the branch and open a PR to exercise the Python 3.11/Gmsh analytic gate.
+KiCad's optional native integration may skip on CI, which does not install
+KiCad; a matching full local test count is not the acceptance requirement.
+
+No source/test code, dependency, private board or physics model was changed.
+No new numerical solve, performance profile, remote CI run, reference-tool
+comparison, hardware or 3D validation was performed. This is a scoped review,
+not an independent physical-model audit. Review documentation is uncommitted;
+no files were staged, pushed or merged by this session.

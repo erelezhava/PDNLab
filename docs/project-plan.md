@@ -274,10 +274,45 @@ removed from the required reference runs. The dependency inventory is complete
 for the current local source workflow, with platform/build/packaging limits
 stated in `dependency-license-audit.md`.
 
-Recommendation: close phase 0 by reviewing and merging `exp8-ipc2581-route`,
-then start phase 1 on a separate branch. No additional numerical experiment is
-recommended before that transition. Contact implementation, production import
-coverage and release-0.1 validation remain phases 1/2 work.
+Phase 0 was merged through PR #7 (`eb052c0`); its tree matches the local
+closeout commit `23b7274`. No additional numerical experiment is recommended
+before phase 1. Contact implementation, production import coverage and
+release-0.1 validation remain phases 1/2 work.
+
+### Phase 1 increments (started 2026-11-15)
+
+Recommended sequence, retaining the validated package primitives:
+
+1. Prepared sparse solve: snapshot conductances/fixed nodes, reuse LU for direct
+   current cases, optionally batch transfer-response RHS columns, instrument
+   preparation/solve time and sparse storage. First increment implemented;
+   measured results and limits are in `DECISIONS.md`.
+2. Consolidate synthetic sheet/tie/barrel/terminal composition and independent
+   conservation reporting. A first composition increment is implemented in
+   `pdnlab_dc.network`: named sheets, disjoint tied/explicitly weighted terminal
+   selections, positive lumped/barrel branches, prepared source membership,
+   repeated direct load cases and checked named results. Analytic strip,
+   branching three-layer and annular-via regressions are recorded in the result
+   log; this is not a production board model or contact-boundary remesher.
+   The measured common-mode power-check sensitivity
+   has been corrected and regression-tested using relative solves/reactions
+   and per-network current checks; see the result log for limits.
+3. Finite-area contact selection is implemented on supplied meshes, with two
+   explicit models: mesh-conforming equipotential electrodes and integrated
+   uniform-current patches. Analytic strip/disk and mesh-convergence coverage,
+   plus a point-contact growth diagnostic, are recorded in `DECISIONS.md`.
+   Automatic contact-boundary remeshing, importer/pad integration and contact
+   resistivity remain later work. Analytic gates remain 0.5% or existing
+   tighter case-specific limits; phase-1 closeout still needs maintainer review.
+
+Sparse LU is the initial backend behind `pdnlab_dc.solver`; an iterative
+implementation remains future work. Production import, thermal and viewer are
+outside these increments. Historical experiments remain regression evidence;
+their real-board orchestration has not yet been migrated.
+
+The [phase-1 review](phase1-review.md) recommends PR review and CI before
+maintainer acceptance. No further coding blocker was identified in that scoped
+review; it does not close the phase or validate production/hardware behaviour.
 
 ### Phase 0 experiments
 
