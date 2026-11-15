@@ -1220,6 +1220,7 @@ one sheet and may not overlap; geometry-based finite contacts, overlap/alias
 resolution and importer integration remain later work. Changes are uncommitted;
 no files were staged, pushed or merged by this session.
 
+
 ## 2026-11-15 — Phase 1 increment 4: finite-area contact selection
 
 **Result / Recommendation: explicit finite electrodes and uniform-current area
@@ -1367,3 +1368,41 @@ No new numerical solve, performance profile, remote CI run, reference-tool
 comparison, hardware or 3D validation was performed. This is a scoped review,
 not an independent physical-model audit. Review documentation is uncommitted;
 no files were staged, pushed or merged by this session.
+
+## 2026-11-15 — Maintainer acceptance of Phase 1 and verified merged-main CI
+
+**Result / Recommendation: Erekle explicitly requested recording Phase 1
+acceptance and the passing CI result. Phase 1's documented synthetic solver
+scope is accepted. Recommendation: carry the existing limitations into Phase 2
+planning; no production-import, hardware or full-3D validation is implied.**
+
+Verified local starting state: clean `main` at
+`a8dadf556bbabb91fa99e039cf5310ab5ef4519b`. GitHub reports that Erekle merged
+[PR #8](https://github.com/erelezhava/PDNLab/pull/8) at that commit. No merge
+was performed by this assistant. This entry supersedes the earlier scoped
+review's pending-CI/maintainer-acceptance status, preserving its history.
+
+Verified GitHub Actions evidence:
+
+- [Workflow run 43740365125](https://github.com/erelezhava/PDNLab/actions/runs/43740365125),
+  event `push`, branch `main`, head SHA matching the merge commit above:
+  `status=completed`, `conclusion=success`.
+- Job `pytest`: success; steps installing Gmsh, installing dependencies and
+  `Run pytest -v`: success. The workflow uses Python 3.11.
+- Detailed remote test counts were not retrieved. The last local numerical
+  result remains **336 passed, no skips, 56.12 s**; it is not a remote CI count.
+  KiCad is not installed by the workflow, so optional native integration may
+  skip there. No test or numerical solve was rerun for this documentation-only
+  update.
+
+README, project plan and the Phase 1 review now record acceptance and link to
+the merged PR/passing workflow. Accepted scope: prepared direct DC solves,
+named synthetic network composition, reference-stable independent checks and
+validated finite-area contact idealizations. Existing limits remain: no
+production importer/contact remeshing, physical interface/3D correlation,
+large-board peak-memory characterization, iterative backend, thermal or viewer.
+Phase 2 implementation is not started by this update.
+
+Verification: documentation consistency and `git diff --check` pass. No source,
+tests, dependencies or private board data changed. Documentation remains
+uncommitted in this checkout; no files were staged, pushed or merged.

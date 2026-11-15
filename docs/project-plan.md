@@ -256,7 +256,7 @@ Seven phases, about 23 full-time working weeks. Phases 0 to 2, about 9 weeks or
 | Phase | Effort | Work | Gate | Exit criterion |
 | --- | --- | --- | --- | --- |
 | 0 Experiments (committed) | 2 weeks | Eight small experiments, listed below, each with its own pass criterion. Reassess after each one. | Decisions recorded | Importer and mesh pipeline chosen; every experiment passed or its failure understood |
-| 1 Solver core (committed) | 3 weeks | FEM on plain polygons, lumped parts, sources and sinks. No board files yet. | Analytic tests pass | Within 0.5% in CI |
+| 1 Solver core (accepted 2026-11-15) | 3 weeks | FEM on plain polygons, lumped parts, sources and sinks. No board files yet. | Analytic tests pass | Within 0.5% in CI |
 | 2 Real boards (committed) | 4 weeks | Importer, board model, mesher on real copper, via model, setup file, VTU output. | Release 0.1 | All six release 0.1 gates below |
 | 3 Checks and report (backlog) | 3 weeks | Series parts, regulators with sense, checks, HTML, PDF and JSON report, CI exit code. | Release 0.2 | Gates a pull request |
 | 4 Electro-thermal (backlog) | 4 weeks | Thermal grid, coupling loop, air and vacuum modes, component heat. | Release 0.3 | Energy balance within 1% |
@@ -279,9 +279,9 @@ closeout commit `23b7274`. No additional numerical experiment is recommended
 before phase 1. Contact implementation, production import coverage and
 release-0.1 validation remain phases 1/2 work.
 
-### Phase 1 increments (started 2026-11-15)
+### Phase 1 increments (accepted 2026-11-15)
 
-Recommended sequence, retaining the validated package primitives:
+Implemented scope, retaining the validated package primitives:
 
 1. Prepared sparse solve: snapshot conductances/fixed nodes, reuse LU for direct
    current cases, optionally batch transfer-response RHS columns, instrument
@@ -303,16 +303,21 @@ Recommended sequence, retaining the validated package primitives:
    plus a point-contact growth diagnostic, are recorded in `DECISIONS.md`.
    Automatic contact-boundary remeshing, importer/pad integration and contact
    resistivity remain later work. Analytic gates remain 0.5% or existing
-   tighter case-specific limits; phase-1 closeout still needs maintainer review.
+   tighter case-specific limits. Erekle accepted this bounded Phase 1 scope
+   on 2026-11-15; the remaining integration/physics limits carry forward.
 
 Sparse LU is the initial backend behind `pdnlab_dc.solver`; an iterative
 implementation remains future work. Production import, thermal and viewer are
 outside these increments. Historical experiments remain regression evidence;
 their real-board orchestration has not yet been migrated.
 
-The [phase-1 review](phase1-review.md) recommends PR review and CI before
-maintainer acceptance. No further coding blocker was identified in that scoped
-review; it does not close the phase or validate production/hardware behaviour.
+Phase 1 is accepted by Erekle. [PR #8](https://github.com/erelezhava/PDNLab/pull/8)
+merged at `a8dadf556bbabb91fa99e039cf5310ab5ef4519b`; the
+[tests workflow on merged main](https://github.com/erelezhava/PDNLab/actions/runs/43740365125)
+and its pytest job/step passed. The [phase-1 review](phase1-review.md) records
+the evidence and carry-forward limits. This acceptance does not establish
+production-import readiness or hardware/3D accuracy. Phase 2 is not started by
+this documentation update.
 
 ### Phase 0 experiments
 
