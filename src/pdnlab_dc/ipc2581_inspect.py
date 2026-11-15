@@ -69,11 +69,25 @@ def _polygon(points):
     return min(candidates)
 
 
+def _net_namer(root):
+    """Return net reference -> name. KiCad 10 (format 20260206) names nets inline and
+    writes no id table; older files reference nets by id through a top-level table."""
+    table = {n[1]: n[2] for n in _children(root, "net")}
+    if not table:
+        return lambda ref: ref
+
+    def name(ref):
+        if ref not in table:
+            raise ValueError(f"net id {ref!r} is not in the board's net table")
+        return table[ref]
+    return name
+
+
 def _source_data(path):
     root = parse_sexpr(Path(path).read_text(encoding="utf-8"))
     if not root or root[0] != "kicad_pcb":
         raise ValueError("expected a native kicad_pcb file")
-    nets = {n[1]: n[2] for n in _children(root, "net")}
+    net_name = _net_namer(root)
     stack = _one(_one(root, "setup"), "stackup")
     thicknesses = {}
     for layer in _children(stack, "layer"):
@@ -88,20 +102,20 @@ def _source_data(path):
             raise ValueError("footprint must have one reference")
         for pad in _children(footprint, "pad"):
             net = _children(pad, "net")
-            if net and nets.get(net[0][1]):
-                pins.add((refs[0], pad[1], nets[net[0][1]]))
+            if net and net_name(net[0][1]):
+                pins.add((refs[0], pad[1], net_name(net[0][1])))
     fills = Counter()
     for zone in _children(root, "zone"):
         for fill in _children(zone, "filled_polygon"):
             layer = _one(fill, "layer")[1]
-            net = nets[_one(zone, "net")[1]]
+            net = net_name(_one(zone, "net")[1])
             points = [(_nm(p[1]), _nm(p[2])) for p in _children(_one(fill, "pts"), "xy")]
             fills[(layer, net, _polygon(points))] += 1
     vias = Counter()
     for via in _children(root, "via"):
         at, drill, layers = _one(via, "at"), _one(via, "drill"), _one(via, "layers")
         vias[(_nm(at[1]), _nm(at[2]), _nm(drill[1]),
-              nets[_one(via, "net")[1]], layers[1], layers[2])] += 1
+              net_name(_one(via, "net")[1]), layers[1], layers[2])] += 1
     return dict(thicknesses=thicknesses, pins=pins, fills=fills, vias=vias,
                 zones=len(_children(root, "zone")),
                 footprints=len(_children(root, "footprint")))
