@@ -933,3 +933,101 @@ not claimed complete.
 Verification for this closeout: documentation consistency and `git diff --check`; no tests or numerical solves rerun. The last measured full suite is
 226 passed, no skips. No source code or private board changed. Phase 1 has
 not started; the remaining step is maintainer review/merge of this branch.
+
+## 2026-11-15 — Phase 1 increment 1: reusable prepared sparse solver
+
+**Result / Recommendation: baseline and final regression suites pass; reusable
+LU and bounded transfer RHS batches are implemented. The larger absolute-voltage
+probe exposes a pre-existing power-check failure. Recommendation: review this
+increment, then address common-mode conservation sensitivity before extending
+synthetic model composition and finite-area contacts. Phase 1 is not complete.**
+
+Starting state: clean working tree on `exp8-ipc2581-route`, HEAD
+`23b7274f6e22a2781cb7e143057d8de209b77786`. GitHub reports PR #7 merged at
+`eb052c029fce61ff37e2a320319655593d5646c0`; its tree
+`0bd38f00cfc6c0d6e7abefb15b950c8acda2d426` equals the local HEAD tree.
+Thus the checkout contains the merged content, but not the merge commit in
+its local history. No repository-specific instruction file was found in the
+checkout or its checked parent locations; the conversation's rules apply.
+
+`git fetch origin main` and `git switch -c phase1-solver-core` both failed
+because `.git` is read-only in this session. The requested local branch could
+not be created. Changes remain uncommitted on the existing checkout; nothing
+was staged, pushed or merged. Private boards were not modified or staged.
+
+Implementation:
+
+- Keep validated assembly, node ties, resistor stamps, barrel formula and
+  independent loss/conservation functions in their existing package modules.
+- Add `pdnlab_dc.solver.prepare_fixed_voltages(matrix, fixed_nodes)` returning
+  a `PreparedSystem`. Preparation snapshots inputs, checks anchoring and
+  factors the free matrix once with sparse LU. `solve` accepts changing fixed
+  voltages and signed current vectors, without transfer extraction. A sink is
+  negative current. Conductance or fixed-membership changes require reprepare.
+- Preserve `fem.solve_fixed_voltages` as a one-shot compatibility wrapper;
+  existing experiments exercise the new solver without changing their scripts.
+- Make transfer extraction explicit, with bounded RHS/full-field column batches
+  and selected observation nodes. The returned dense transfer matrix still
+  grows with observations × injections. Direct and transfer calls share LU.
+- Report preparation time (including factorization), factorization time, solve
+  time, sparse nonzeros/array bytes and maximum RHS batch bytes. Sparse bytes
+  count G, fixed coupling and exposed L/U arrays; they exclude opaque native
+  storage, permutations, temporary workspace, Python overhead and peak RSS.
+  No large-board bottleneck or speedup is established by these probes.
+
+Validation commands used the existing virtual environment directly because
+`uv run` could not write its default cache in this session:
+
+```sh
+.venv/bin/python -m pytest -q
+.venv/bin/python experiments/phase1_solver_benchmark.py
+```
+
+Baseline: **226 passed, no skips, 43.44 s**. Final suite: **257 passed, no skips,
+43.02 s**. All existing analytic, mesh-convergence and conservation regressions
+ran. The new three-layer synthetic strip/barrel case has intermediate-layer
+branching, two mesh resolutions and two loads; terminal drops and barrel
+currents meet its tighter 1e-6 relative gate. Independent triangle loss,
+resistor loss and all three rim KCL checks pass. New contract tests count one
+factorization across repeated solves/transfer extraction, verify input snapshot
+isolation, direct/transfer equivalence, actual RHS batch shapes, all-fixed and
+multiple-fixed cases, and invalid-input rejection. No tolerance was relaxed.
+
+Synthetic probe: 100 × 20 mm, 35 µm copper, rho = 1.724e-8 ohm metre,
+source on the left edge at zero reference, 24 mesh-vertex current samples,
+eight direct cases (10 to 80 mA per sample), transfer batch size eight.
+Each mesh is released before constructing the next. These vertex samples
+exercise scaling, not physical contact accuracy. The table is one final local
+invocation after pytest ended; it is not a statistical performance benchmark.
+Python 3.14.4, NumPy 2.5.4, SciPy 1.18.1.
+
+| Nodes / free | Triangles | Preparation incl. LU (ms) | LU (ms) | Eight direct cases (ms) | 24-column transfer (ms) | Sparse array bytes | Maximum transfer RHS bytes |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 2,121 / 2,100 | 4,000 | 8.263 | 5.862 | 2.884 | 4.699 | 980,860 | 134,400 |
+| 6,601 / 6,560 | 12,800 | 36.721 | 31.689 | 16.391 | 19.224 | 4,592,636 | 419,840 |
+
+Matrix/factor nonzeros: 10,361 / 68,548 and 32,601 / 341,316. The corresponding
+single direct RHS arrays use 16,800 and 52,480 bytes. Largest direct-versus-
+transfer voltage differences are 8.67e-19 and 2.17e-18 V. Current residuals
+are 3.43e-13 and 2.65e-12 A; independently integrated power residuals are
+6.97e-16 and 5.18e-15 W. Both zero-reference probes pass their conservation gates.
+
+**Measured limitation:** the initial probe used 3.3 V. On the 6,601-node case,
+its current residual is 4.75e-9 A (passes) but its power residual is 1.5654e-8 W,
+above the 4.0601e-9 W limit (fails). The maximum voltage difference after
+subtracting the 3.3 V shift is only 7.05e-12 V. Running the original HEAD's
+`spsolve` implementation independently on that same synthetic case also fails
+power: residual 1.3338e-8 W versus limit 4.0601e-9 W. This is not introduced by
+the reusable LU API. Common-mode roundoff in reactions and signed terminal
+power is the likely explanation; it has not been fully isolated or corrected.
+The benchmark reports the 3.3 V diagnostic explicitly, including its failed
+gate, alongside the zero-reference primary case. No check is weakened or
+silently treated as passing. Recommendation: make reaction/power evaluation
+numerically stable under a reference shift, with a regression for this case.
+
+Not run: remote CI, new private-board solves, new padne/KiPI runs, hardware or
+full-3D validation, large-board/peak-RSS profiling or an iterative backend.
+No production importer, contact-area geometry builder, thermal or viewer work
+was performed. The real-board experiment still has its original transfer and
+scenario orchestration; migrating it and avoiding simultaneous coarse/fine
+model retention there remain follow-up work.

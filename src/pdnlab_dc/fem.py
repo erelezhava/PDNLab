@@ -9,12 +9,8 @@ the result is an ordinary nodal conductance matrix: every triangle edge acts
 as a resistor of conductance g * cot(opposite angle) / 2.
 """
 
-import warnings
-
 import numpy as np
 import scipy.sparse as sp
-from scipy.sparse.csgraph import connected_components
-from scipy.sparse.linalg import MatrixRankWarning, spsolve
 
 
 def _indices(values, size, name, ndim):
@@ -91,53 +87,11 @@ def solve_fixed_voltages(matrix, fixed_nodes, fixed_voltages, injected_current=N
     ValueError is raised. Floating copper removal belongs to the future board
     preprocessing stage, not this low-level solver.
     """
-    matrix = sp.csr_matrix(matrix, dtype=float)
-    n_nodes = matrix.shape[0]
-    if matrix.shape != (n_nodes, n_nodes) or n_nodes == 0:
-        raise ValueError("matrix must be nonempty and square")
-    if not np.isfinite(matrix.data).all():
-        raise ValueError("matrix must be finite")
-    fixed_nodes = _indices(fixed_nodes, n_nodes, "fixed_nodes", 1)
-    if np.unique(fixed_nodes).size != fixed_nodes.size:
-        raise ValueError("fixed_nodes contains duplicates")
+    # Compatibility entry point: callers with repeated loads should prepare once.
+    from .solver import prepare_fixed_voltages
 
-    v = np.zeros(n_nodes)
-    v[fixed_nodes] = fixed_voltages
-    if not np.isfinite(v).all():
-        raise ValueError("fixed_voltages must be finite")
-    current = np.zeros(n_nodes)
-    if injected_current is not None:
-        current = np.asarray(injected_current, dtype=float)
-        if current.shape != (n_nodes,) or not np.isfinite(current).all():
-            raise ValueError("injected_current must be finite with shape (N,)")
-
-    graph = matrix.copy()
-    graph.eliminate_zeros()
-    count, labels = connected_components(graph, directed=False)
-    anchored = np.unique(labels[fixed_nodes])
-    if anchored.size != count:
-        floating = np.flatnonzero(~np.isin(labels, anchored))
-        raise ValueError(f"unanchored component: nodes {floating[:10].tolist()}")
-
-    is_free = np.ones(n_nodes, dtype=bool)
-    is_free[fixed_nodes] = False
-    free_nodes = np.flatnonzero(is_free)
-    if free_nodes.size == 0:
-        return v
-
-    rhs = -(matrix[free_nodes][:, fixed_nodes] @ v[fixed_nodes])
-    rhs = rhs + current[free_nodes]
-
-    free_matrix = matrix[free_nodes][:, free_nodes].tocsc()
-    with warnings.catch_warnings():
-        warnings.simplefilter("error", MatrixRankWarning)
-        try:
-            v[free_nodes] = spsolve(free_matrix, rhs)
-        except MatrixRankWarning as exc:
-            raise ValueError("conductance matrix is singular") from exc
-    if not np.isfinite(v).all():
-        raise ValueError("solve produced nonfinite voltages")
-    return v
+    return prepare_fixed_voltages(matrix, fixed_nodes).solve(
+        fixed_voltages, injected_current)
 
 
 def node_currents(matrix, v):

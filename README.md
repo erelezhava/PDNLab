@@ -2,14 +2,14 @@
 
 Open-source DC power-integrity (IR drop) solver for PCBs. Own solver code, KiCad 10 boards as the first input, Apache-2.0.
 
-**Status: phase 0 evidence complete; awaiting closeout merge.** Experiment
-scripts solve one real-board net.
+**Status: phase 0 merged through PR #7; phase 1 solver core started.** Experiment
+scripts solve one real-board net. The first phase-1 increment adds reusable
+sparse-LU preparation and direct load-case solves on synthetic networks.
 IPC-2581 and per-pin terminal-model choices are confirmed by the maintainer;
 the production importer and contact model are not implemented yet.
 See [the result log](docs/DECISIONS.md) for measured results and limitations,
 and the [dependency inventory](docs/dependency-license-audit.md) for the
-current licences and packaging boundaries. Phase 1 starts after the closeout
-branch is merged.
+current licences and packaging boundaries. Phase 1 is not complete.
 
 See the [development plan](docs/project-plan.md) for scope, architecture,
 experiments and release gates.
@@ -32,6 +32,53 @@ gmsh --version
 
 Without Gmsh, the integration tests that need it are skipped. CI installs it so
 those tests run there too. The solver never imports the Gmsh Python API.
+
+## Prepared solver (phase 1)
+
+Existing assembly, ties and resistor primitives remain in `pdnlab_dc.fem`;
+barrel resistance is in `pdnlab_dc.vias`. Prepare the final electrical matrix
+after tying nodes and stamping resistors:
+
+```python
+from pdnlab_dc.solver import prepare_fixed_voltages
+
+system = prepare_fixed_voltages(matrix, fixed_nodes)
+v = system.solve(3.3, injected_current)  # positive into copper; sinks negative
+v_next = system.solve(3.3, next_current)  # reuses the same factorization
+# Optional: observed voltage per +1 A, with fixed voltages at zero:
+z = system.transfer_resistance(load_nodes, batch_size=8)
+print(system.stats, system.last_solve)
+```
+
+Preparation copies the matrix and fixed indices. Reprepare if conductances or
+fixed-node membership change; current and fixed-voltage values may change
+without preparation. The one-shot `fem.solve_fixed_voltages` remains compatible
+and delegates to this solver. Every component still needs a fixed node.
+Sources here are voltages to a reference, not arbitrary two-terminal sources.
+
+Transfer extraction bounds full-field RHS/solution columns by `batch_size`,
+but its returned dense observation-by-injection matrix can still be large.
+It is never built by `solve`. A selected electrical node may represent a tied
+finite contact; selecting a bare mesh vertex does not validate point-contact
+physics. No contact geometry builder is implemented yet.
+
+`system.stats` reports preparation/factorization time, nonzero counts and
+sparse-array bytes; it does not measure peak RSS or native LU workspace.
+`system.last_solve` records elapsed time and RHS batching. Independent loss
+integration and conservation checks remain in `pdnlab_dc.checks` and require
+original sheet geometry and branch data from the caller.
+
+Run the synthetic performance probe (no private boards):
+
+```sh
+uv run python experiments/phase1_solver_benchmark.py
+```
+
+The primary probe solves relative to zero. A separate 3.3 V probe exposes a
+known common-mode sensitivity in the existing reaction-current/power check;
+on the larger measured synthetic case its power gate fails. See the result
+log before interpreting absolute-voltage conservation at small losses.
+The real-board experiment's transfer/scenario workflow has not been migrated.
 
 ## Phase 0 experiments
 
