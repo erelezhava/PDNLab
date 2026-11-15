@@ -6,6 +6,13 @@ Prints the solved resistance of a copper strip next to rho * L / (W * t).
 Pass criterion from the plan: relative error at or below 1e-6.
 """
 
+import argparse
+import json
+from pathlib import Path
+
+import numpy as np
+
+from pdnlab_dc.checks import balance_checks, sheet_losses
 from pdnlab_dc.fem import assemble_sheet, resistance_between
 from pdnlab_dc.simple_meshes import rectangle_mesh
 
@@ -23,23 +30,40 @@ CASES = [
 ]
 
 
-def main():
+def experiment(output_dir=None):
     print(f"{'L mm':>7} {'W mm':>7} {'t um':>5} {'nodes':>6} "
           f"{'R solved, ohm':>16} {'R formula, ohm':>16} {'rel. error':>11}  result")
     all_pass = True
+    results = []
     for length, width, thickness, nx, ny, jitter in CASES:
         nodes, triangles, left, right = rectangle_mesh(
             length, width, nx, ny, "alternate", jitter
         )
         matrix = assemble_sheet(nodes, triangles, thickness / RHO_COPPER)
-        resistance, _ = resistance_between(matrix, left, right)
+        resistance, v = resistance_between(matrix, left, right)
+        loss = float(sheet_losses(nodes, triangles, thickness / RHO_COPPER, v).sum())
+        checks = balance_checks(matrix, v, np.r_[left, right], loss)
         reference = RHO_COPPER * length / (width * thickness)
         error = abs(resistance - reference) / reference
-        passed = error <= LIMIT
+        passed = bool(error <= LIMIT and checks["passed"])
+        results.append(dict(length_m=length, width_m=width, thickness_m=thickness,
+                            nodes=len(nodes), resistance_ohm=float(resistance),
+                            reference_ohm=reference, relative_error=float(error),
+                            checks=checks, passed=passed))
         all_pass = all_pass and passed
         print(f"{length * 1e3:7.1f} {width * 1e3:7.1f} {thickness * 1e6:5.0f} {len(nodes):6d} "
               f"{resistance:16.9e} {reference:16.9e} {error:11.1e}  {'PASS' if passed else 'FAIL'}")
-    raise SystemExit(0 if all_pass else 1)
+    if output_dir is not None:
+        output_dir.mkdir(parents=True, exist_ok=True)
+        (output_dir / "results.json").write_text(json.dumps(results, indent=2) + "\n", encoding="utf-8")
+    return all_pass
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--output-dir", type=Path)
+    args = parser.parse_args()
+    raise SystemExit(0 if experiment(args.output_dir) else 1)
 
 
 if __name__ == "__main__":
