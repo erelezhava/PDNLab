@@ -210,6 +210,16 @@ The diagnostic point's voltage grows with refinement; it is not reported as a
 physical contact-resistance prediction. The finite circular electrode uses a
 fixed 128-sided polygon, so its circle-reference error includes polygon geometry.
 
+## Phase 2 board-model scaffold
+
+`pdnlab_dc.board` contains immutable neutral records for source provenance,
+layers, nets, copper features, physical pin pads and drill features. `BoardModel`
+validates IDs, references, SI dimensions, polygon topology and layer/drill
+ordering. It does not parse XML, transform/repair geometry or infer electrical
+contacts. See the [development contract](docs/phase2-board-model-contract.md)
+and `tests/test_board.py` for synthetic examples. Production importing remains
+unimplemented.
+
 ## Phase 0 experiments
 
 | # | Experiment | Status |
