@@ -862,3 +862,74 @@ has the same tree as the tested local HEAD, but branch creation returned
 403 (`Resource not accessible by integration`). No branch was published.
 The accidentally included documentation files were left untouched pending
 maintainer direction.
+
+## 2026-11-15 — Maintainer approvals and phase-0 closeout
+
+**Result: Erekle confirmed the importer route and terminal-model proposal,
+dropped KiPI, and requested removal of the two accidentally committed
+documents. Recommendation: complete the remaining phase-0 housekeeping and
+dependency licence audit, then begin phase 1; no further reference-tool run
+is recommended as a prerequisite.**
+
+Maintainer instructions in this conversation:
+
+- Remove `docs/experiments-review.md` and
+  `docs/pdnlab-dc-tool-description.html`. Both were removed from the working
+  tree; their Git history is retained.
+- Confirm IPC-2581 as the importer route. Reading an Altium or OrCAD X export
+  is not a prerequisite to phase 1; compatibility remains untested.
+- Approve a per-pin choice between a soldered equipotential pad and a contact
+  point/area at an explicit position. This approval selects the model scope;
+  it does not validate or implement the contact model. Recommendation: use a
+  finite contact area for physical voltage-drop predictions, and treat an
+  ideal point's mesh-dependent voltage explicitly.
+- Drop the KiPI reference run from the current plan. KiPI was not run.
+
+The working plan, README experiment status and reference-tool setup status
+were updated to reflect these instructions. No solver code or private board was changed, and phase 1 was not
+started. No tests or numerical solves were rerun for this documentation-only
+closeout. The last measured full suite remains 226 passed, no skips.
+
+Remaining closeout recommendations: review/merge the IPC-2581 branch with this
+cleanup; complete the dependency licence audit promised in phase 0 (the plan
+still labels its licence table as memory-based); record the phase-0 gate as
+closed with the padne discrepancy understood and KiPI explicitly removed.
+Contact-model implementation and validation belong to phases 1/2, rather than
+another phase-0 experiment.
+
+## 2026-11-15 — Phase 0 dependency inventory and transition recommendation
+
+**Result: the dependency inventory and approved documentation cleanup are
+complete in the working tree. Recommendation: merge `exp8-ipc2581-route` to
+close phase 0, then begin phase 1 on a separate branch. No further phase-0
+numerical run is recommended.**
+
+The maintainer requested finishing phase 0 and proceeding to phase 1 after
+confirming IPC-2581, approving per-pin terminal models, removing the two
+accidentally committed documents, and dropping KiPI.
+
+`docs/dependency-license-audit.md` records 21 installed dependency distributions
+and 45 local licence-file SHA-256 hashes. The audit distinguishes Python
+project licences from GEOS, bundled numerical runtimes and other notices.
+Gmsh reports `4.14.0-git` and KiCad CLI `10.0.8`. Current upstream licensing
+information was checked for the external tools and for Shapely/GEOS, Colorama
+and Hatchling. No dependency change is recommended for the current source-only
+workflow with separately installed dependencies and external executables.
+
+The inventory is scoped: other-platform wheels, uninstalled Python-version
+alternatives, isolated build transitives and future bundled application
+artifacts were not exhaustively audited. These are recorded packaging/version
+review tasks, not evidence of solver failure. No binary bundle is released by
+this change, and no categorical legal compatibility guarantee is claimed.
+
+Phase-0 evidence: experiments 1–5 have analytic/conservation checks; experiment
+6 and the IPC-2581 real-net comparison cover the selected route; experiment 7
+records the padne reference and terminal-model discrepancy, with residual
+limitations stated; experiment 8 meshes and solves the real net. KiPI and the
+original StickHub reference case were not run. General cross-CAD support, the
+finite-area contact implementation, full-3D correlation and measurements are
+not claimed complete.
+
+Verification for this closeout: documentation consistency and `git diff --check`; no tests or numerical solves rerun. The last measured full suite is
+226 passed, no skips. No source code or private board changed. Phase 1 has
+not started; the remaining step is maintainer review/merge of this branch.
