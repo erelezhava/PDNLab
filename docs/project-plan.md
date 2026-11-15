@@ -1,6 +1,6 @@
 # PDNLab DC: Development Plan
 
-Last updated 2026-11-14. This file is the working copy of the plan.
+Last updated 2026-11-15. This file is the working copy of the plan.
 
 Converted from the supplied `PLAN.md.pdf`. Experiment results are recorded in
 [DECISIONS.md](DECISIONS.md). `LANDSCAPE.md` is a companion document that is not
@@ -65,17 +65,21 @@ flowchart TD
 The DC and thermal solvers repeat (heat down, temperature up) until the result is
 stable.
 
-**Ingestion.** Recommended route: `kicad-cli pcb export ipc2581`, then parse the
+**Ingestion.** Maintainer-confirmed route (2026-11-15): `kicad-cli pcb export ipc2581`, then parse the
 XML. Three reasons:
 
 - The SWIG `pcbnew` bindings are deprecated since KiCad 9.0, with removal planned
   for KiCad 11.0 (KiCad developer docs).
 - `kicad-cli` needs no GUI, so the same command runs on a CI runner (KiCad 10 CLI
   reference).
-- Altium and OrCAD X also export IPC-2581, so one parser can serve all three.
+- IPC-2581 is the intended common format for later Altium and OrCAD X adapters.
+  Compatibility with their exports has not been tested.
 
-Phase 0 must confirm that the export carries zone fills, stackup thickness and
-pin-to-net data. The fallback is parsing the `.kicad_pcb` file directly.
+The phase 0 KiCad export audit and real-net comparison are recorded in
+`DECISIONS.md`. The direct `.kicad_pcb` reader remains an experimental cross-check.
+Electrical pin types and thermal-relief gap metadata are not supplied by the
+experimental export reader; loads must be explicit and meshing must account for
+relief geometry. These are implementation requirements for phase 2.
 
 **Setup file.** Sources, sinks, series parts and limits live in a TOML file next
 to the board. It is version-controlled and reviewable in a pull request. KiCad
@@ -107,7 +111,7 @@ and q heat per unit area.
 | --- | --- | --- |
 | Copper sheet | Linear triangles, one voltage per node, sheet conductance σ(T)·t per layer | Resolves neck-downs and thin traces with few unknowns |
 | Via | One rim node per contacted layer: on each layer the via touches, all mesh nodes on the hole rim are tied to that layer's rim node. Rim nodes of successive contacted layers are joined by barrel resistors. | Current injected at a single mesh node gives a drop that changes with mesh size; a tied rim does not. One node shared by all layers would short out the barrel. |
-| Component pin | Pad area as one equipotential, optional contact resistance | Solder and lead short the pad |
+| Component pin | Per-pin choice: soldered pad as an equipotential, or contact point/area at an explicit position; optional contact resistance | Maintainer-approved on 2026-11-15. Unsoldered contacts do not short the whole pad. A mathematical point in a 2D sheet needs special treatment because its local voltage depends on mesh size. |
 | Source, regulator | Fixed voltage between pin groups; with remote sense the constraint moves to the sense pins | Matches how a real regulator holds its feedback node |
 | Sink | Fixed current, shared between pins by the solve or forced equal per pin | Both cases occur: BGA balls share, separate connectors do not |
 | Series part | Lumped resistor between two pin groups | Joins nets into one power tree |
@@ -211,8 +215,10 @@ they are.
 | Report | Jinja2 HTML template, WeasyPrint for PDF | BSD |
 | Tooling | Typer CLI, uv, pytest, GitHub Actions | MIT |
 
-Licences in the table are from memory. Phase 0 includes a dependency audit to
-confirm them.
+The current installed dependency inventory and packaging boundaries are recorded
+in [dependency-license-audit.md](dependency-license-audit.md). Future/backlog
+packages in the table are not covered until they are added; their licences and
+the exact release artifact must be reviewed then.
 
 **Licence: Apache-2.0, decided.** The goal is that anyone can use the tool
 without restrictions, including inside other products. Users only have to keep
@@ -260,6 +266,19 @@ Seven phases, about 23 full-time working weeks. Phases 0 to 2, about 9 weeks or
 Each phase ends at a gate. The next phase does not start until the gate's
 criterion is met. The percentages are proposed targets, not measured results.
 
+### Phase 0 closeout (2026-11-15)
+
+The experiment evidence and maintainer choices are recorded in `DECISIONS.md`.
+IPC-2581 is confirmed; per-pin soldered/contact models are approved; KiPI is
+removed from the required reference runs. The dependency inventory is complete
+for the current local source workflow, with platform/build/packaging limits
+stated in `dependency-license-audit.md`.
+
+Recommendation: close phase 0 by reviewing and merging `exp8-ipc2581-route`,
+then start phase 1 on a separate branch. No additional numerical experiment is
+recommended before that transition. Contact implementation, production import
+coverage and release-0.1 validation remain phases 1/2 work.
+
 ### Phase 0 experiments
 
 Each experiment is small enough for one or two sittings. After each one, record
@@ -274,7 +293,7 @@ Effort figures are rough guesses.
 | 4 | Two rings on two layers, joined at their inner rims by one barrel resistor. | Relative error ≤ 0.5% against ring + barrel + ring. Confirms one rim node per layer. | 3 h |
 | 5 | Current conservation and power balance added as checks to experiments 1 to 4. | Both pass with the tolerances defined under the release 0.1 gates. | 2 h |
 | 6 | Export one real KiCad 10 board to IPC-2581 and inspect the file. | Zone fills, stackup thickness, pin-to-net data and hole sizes are present, or the fallback parser is chosen. | 3 h |
-| 7 | Run padne and KiPI on that same board. | Reference voltages recorded; install and setup problems noted. | 4 h |
+| 7 | Run padne on the real-board comparison case. KiPI dropped by the maintainer on 2026-11-15. | Reference voltages recorded; setup and terminal-model differences explained. | 4 h |
 | 8 | One net and layer of the real board through geometry cleanup and Gmsh. | It meshes, or the failure mode is understood. | 5 h |
 
 The plain rectangle and the via geometry are separate tests on purpose. A hole
@@ -325,7 +344,7 @@ cannot.
 | 1b Self-consistency | Current conservation and power balance | Bookkeeping errors in terminal currents, via currents and loss integration | 1e-6 relative plus an absolute floor, as in gates 2 to 4 | Every solve |
 | 2 Mesh convergence | Same case at half the element size | Under-resolved geometry | 1% of the drop plus 10 µV | CI, every commit |
 | 3 Full 3D | Small coupon solved in 3D with Elmer | Via and pad model error | 3% relative | Each model change |
-| 4 Other tools | padne and KiPI; a PowerDC trial if one can be arranged later | Importer and setup mistakes on real boards | 5% of the drop plus 50 µV | Each release |
+| 4 Other tools | padne; a PowerDC trial if one can be arranged later | Importer and setup mistakes on real boards | 5% of the drop plus 50 µV | Each release |
 | 5 Measurement | Own test board, four-wire | Everything, including material assumptions | Publish the number | Once, for 1.0 |
 
 The two analytic cases that carry most of level 1, a strip of length L and width
@@ -364,7 +383,7 @@ real board geometry and one person's time are what can sink this.
 | Mesher fails on real copper | padne users hit crashes from tiny notches in real boards (forum thread) | Geometry cleanup before meshing. Run every open KiCad board you can find in CI. |
 | Via and pad models inaccurate | padne's author doubts his own via model in the same thread | Level 3 coupon in full 3D, then level 5 measurement |
 | Memory and runtime on large boards | padne was killed on a 220 × 200 mm board with 8 GB | Multigrid solver from the start, coarser mesh away from small features |
-| IPC-2581 export lacks data | Not yet confirmed that zone fills and stackup survive the export | Phase 0 test. Fallback is a direct .kicad_pcb parser. |
+| IPC-2581 export coverage varies | KiCad route confirmed on one net; other CAD exports and unsupported geometry remain untested | Explicit unsupported-content errors, geometry audits and broader importer fixtures in phase 2. |
 | Duplicating padne | It is funded, active and uses the same core method | Differentiate on electro-thermal with vacuum mode, sign-off in CI, permissive licence, multi-CAD input |
 | Fab tolerance hides model error | Finished copper thickness differs from nominal | Calibration strips on the test board |
 

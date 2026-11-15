@@ -11,6 +11,11 @@ not resolve `github.com`. The StickHub part of the experiment remains pending
 until the tools have been tried on that board and their settings and results
 or specific tool failures have been recorded.
 
+**Maintainer update (2026-11-15):** KiPI was dropped from the current plan.
+The installation instructions below are retained as historical reference; a
+KiPI run is not required before phase 1. The padne comparison and its explained
+terminal-model discrepancy remain the external cross-check evidence.
+
 ## Install separately from PDNLab
 
 Run these commands from the PDNLab repository in your normal terminal. These

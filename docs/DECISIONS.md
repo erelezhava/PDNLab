@@ -751,3 +751,185 @@ maintainer's machine since these changes.
   (equipotential) and a contact (a point or small area at a stated position).
 - Whether the padne half of experiment 7 is closed with this result, and
   whether KiPI is still wanted.
+
+## 2026-11-15 — Importer route: local IPC-2581 comparison and independent review
+
+**Result: the sandbox comparison was reproduced locally: geometry and all
+three comparison gates pass. Recommendation: accept this as evidence for the
+KiCad IPC-2581 route; ask the maintainer to confirm the importer route and
+terminal model before phase 1. Cross-CAD compatibility remains untested.**
+
+This entry replaces the uncommitted IPC-2581 draft's claimed results with
+measurements from this machine. The draft's whole-board strict-audit run was
+not repeated here; its reported counts are not adopted as local measurements.
+The local and GitHub-main logs contained two entries dated 2026-11-15 before
+this append, rather than the three mentioned in the handoff.
+
+`experiments/exp08_ipc2581_net.py` reads net +3V3 from the private test board's
+IPC-2581 C export and compares it with `exp08_real_net.read_net`, using the
+same cleanup, meshing and FEM code. The private board and generated output
+remain git-ignored under `tests/test boards/`.
+
+Inputs measured for this run:
+
+- Board SHA-256:
+  `d1535d701eec4db47dc4eb7e3bfd08135ed13735c7ec7ec2b5b59c6029d54187`.
+- Export SHA-256 (the export supplied as re-exported on 2026-11-15):
+  `0b97c73bdb3ca19ff4046a6f52370fa140f5956ced05f57e0aa4be377b1f8c00`.
+- Gmsh reports `4.14.0-git`; Python `3.14.4`.
+
+Geometry comparison:
+
+| Item | Board file | Export | Difference |
+| --- | --- | --- | --- |
+| Copper layers and stackup | 4 layers | 4 layers | none |
+| Track segments | 96 | 96 | none on the 1 nm comparison grid |
+| Vias | 28 | 28 | position, drill, pad size and span equal |
+| Pads | 41 | 41 | kind, layers and drill equal |
+| In2.Cu fill | 1 polygon, 1198.575741213 mm² | 1 polygon | 0 mm² symmetric difference |
+
+Maximum pad-centre difference is 2.84e-14 mm; maximum outline distance
+(Hausdorff distance between boundaries) is 2.07e-8 mm. The original
+area/perimeter outline statistic is 4.56e-9 mm, but is no longer the gate:
+a narrow local outline error can hide in an average-area statistic.
+
+Setup values: 100 mA per load at
+`U3.8,Y2.4,U1.B2,U1.D2,U1.F4,U1.F5,U1.F6,U1.H1,U1.K1,U2.8,U4.8`;
+ρ = 1.724e-8 Ω·m; plating 0.025 mm; h = 0.5 mm; 96-sided holes;
+growth 0.15. Source J4 uses `J4.6,J4.10,J4.13,J4.16`, J1 uses `J1.1`,
+and J5 uses `J5.1`.
+
+| Source | Direct largest drop (mV) | Export with relief: maximum relative drop difference | Export alone: largest drop (mV) | Export alone: maximum difference (µV) |
+| --- | --- | --- | --- | --- |
+| J4 | 3.024526 | 8.85e-14 | 3.024214 | 0.359739 |
+| J1 | 2.680877 | 7.75e-14 | 2.678449 | 2.453349 |
+| J5 | 2.577941 | 8.37e-14 | 2.574698 | 3.267775 |
+
+Differences are maxima over all load pins, not just the pin with largest drop.
+All requested loads are reachable. All three gates pass: geometry within the
+stated tolerances, drop agreement within 1e-9 relative with the relief gap
+supplied, and 10 µV + 1% without it. The direct and relief-supplied meshes
+both have 20,770 F.Cu nodes, 198,167 In2.Cu nodes and 14,677 B.Cu nodes.
+Without the gap, In2.Cu has 189,227 nodes.
+
+Against the saved sandbox JSON (reported Gmsh 4.12.1), the local direct drops
+differ by at most 0.0008425 µV (J4), 0.004903 µV (J1) and 0.022614 µV (J5).
+The sandbox result is therefore reproduced within small mesher-dependent
+numerical differences, not bit for bit.
+
+Independent review and corrections:
+
+- Y is reversed for track endpoints, pad centres, holes and fill vertices.
+  Rectangular and rounded-rectangle rotations are restricted to multiples of
+  90 degrees. Symmetry makes rotation sign irrelevant for these shapes at
+  these angles; arbitrary-angle rotation direction remains unvalidated.
+- Via size is looked up from circular copper pads by position, separately on
+  each copper layer. Missing, inconsistent, duplicate or orphan via pads and
+  holes now raise rather than silently changing the model.
+- A plated hole identifies a through-hole pin by position, not an assumed
+  padstack name. Unmatched holes, multilayer pin pads without a matching hole,
+  duplicate holes and unsupported spans now raise.
+- Unsupported feature geometry, container transforms, pad scaling, slots,
+  unknown plating states and non-round track ends now raise. Existing
+  rejection of arcs, custom/mirrored pads and curved contours is retained.
+  These checks apply to the selected net's copper and drill content.
+- Unreachable or empty load sets raise, rather than allowing a comparison
+  restricted to the remaining reachable loads. Output JSON now records input
+  hashes and the Gmsh version.
+- Experiment 6 now reports the combined coverage and geometry audit in its
+  printed and saved recommendation. A passing strict audit no longer says
+  that tracks and pads still need auditing. No importer choice is made.
+
+**Verification:** baseline suite: 201 passed, no skips. After review changes:
+226 passed, no skips. Tests use the hand-written board/export pair and cover
+Y reversal, supported rotations, via-size changes, hole/pad correspondence,
+unsupported content, a local outline defect, and combined audit messaging.
+The optional KiCad demo integration ran. The requested real-net command was
+run before and after the reader corrections; its report is
+`tests/test boards/test brd 1/_exp08/ipc2581/ipc2581_vs_direct.json`.
+
+**Limits and pending work:** one board, one net, KiCad export only. Pin electrical
+types and thermal-relief gaps remain absent from the reader's export-derived
+board dictionary; explicit loads and the two relief-gap cases expose these
+limitations. The pad model is still equipotential, and through-hole leads
+remain ideal. No Altium/OrCAD X import, new padne solve, KiPI run, hardware
+measurement or phase-1 migration was performed.
+
+Local branch switching/commit is blocked because `.git` is read-only in this
+session; terminal GitHub access also failed DNS resolution. The GitHub
+connector confirmed main commit `9992ccce1eca2e88204989313ef861f844809c14`
+has the same tree as the tested local HEAD, but branch creation returned
+403 (`Resource not accessible by integration`). No branch was published.
+The accidentally included documentation files were left untouched pending
+maintainer direction.
+
+## 2026-11-15 — Maintainer approvals and phase-0 closeout
+
+**Result: Erekle confirmed the importer route and terminal-model proposal,
+dropped KiPI, and requested removal of the two accidentally committed
+documents. Recommendation: complete the remaining phase-0 housekeeping and
+dependency licence audit, then begin phase 1; no further reference-tool run
+is recommended as a prerequisite.**
+
+Maintainer instructions in this conversation:
+
+- Remove `docs/experiments-review.md` and
+  `docs/pdnlab-dc-tool-description.html`. Both were removed from the working
+  tree; their Git history is retained.
+- Confirm IPC-2581 as the importer route. Reading an Altium or OrCAD X export
+  is not a prerequisite to phase 1; compatibility remains untested.
+- Approve a per-pin choice between a soldered equipotential pad and a contact
+  point/area at an explicit position. This approval selects the model scope;
+  it does not validate or implement the contact model. Recommendation: use a
+  finite contact area for physical voltage-drop predictions, and treat an
+  ideal point's mesh-dependent voltage explicitly.
+- Drop the KiPI reference run from the current plan. KiPI was not run.
+
+The working plan, README experiment status and reference-tool setup status
+were updated to reflect these instructions. No solver code or private board was changed, and phase 1 was not
+started. No tests or numerical solves were rerun for this documentation-only
+closeout. The last measured full suite remains 226 passed, no skips.
+
+Remaining closeout recommendations: review/merge the IPC-2581 branch with this
+cleanup; complete the dependency licence audit promised in phase 0 (the plan
+still labels its licence table as memory-based); record the phase-0 gate as
+closed with the padne discrepancy understood and KiPI explicitly removed.
+Contact-model implementation and validation belong to phases 1/2, rather than
+another phase-0 experiment.
+
+## 2026-11-15 — Phase 0 dependency inventory and transition recommendation
+
+**Result: the dependency inventory and approved documentation cleanup are
+complete in the working tree. Recommendation: merge `exp8-ipc2581-route` to
+close phase 0, then begin phase 1 on a separate branch. No further phase-0
+numerical run is recommended.**
+
+The maintainer requested finishing phase 0 and proceeding to phase 1 after
+confirming IPC-2581, approving per-pin terminal models, removing the two
+accidentally committed documents, and dropping KiPI.
+
+`docs/dependency-license-audit.md` records 21 installed dependency distributions
+and 45 local licence-file SHA-256 hashes. The audit distinguishes Python
+project licences from GEOS, bundled numerical runtimes and other notices.
+Gmsh reports `4.14.0-git` and KiCad CLI `10.0.8`. Current upstream licensing
+information was checked for the external tools and for Shapely/GEOS, Colorama
+and Hatchling. No dependency change is recommended for the current source-only
+workflow with separately installed dependencies and external executables.
+
+The inventory is scoped: other-platform wheels, uninstalled Python-version
+alternatives, isolated build transitives and future bundled application
+artifacts were not exhaustively audited. These are recorded packaging/version
+review tasks, not evidence of solver failure. No binary bundle is released by
+this change, and no categorical legal compatibility guarantee is claimed.
+
+Phase-0 evidence: experiments 1–5 have analytic/conservation checks; experiment
+6 and the IPC-2581 real-net comparison cover the selected route; experiment 7
+records the padne reference and terminal-model discrepancy, with residual
+limitations stated; experiment 8 meshes and solves the real net. KiPI and the
+original StickHub reference case were not run. General cross-CAD support, the
+finite-area contact implementation, full-3D correlation and measurements are
+not claimed complete.
+
+Verification for this closeout: documentation consistency and `git diff --check`; no tests or numerical solves rerun. The last measured full suite is
+226 passed, no skips. No source code or private board changed. Phase 1 has
+not started; the remaining step is maintainer review/merge of this branch.

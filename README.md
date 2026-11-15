@@ -2,7 +2,14 @@
 
 Open-source DC power-integrity (IR drop) solver for PCBs. Own solver code, KiCad 10 boards as the first input, Apache-2.0.
 
-**Status: phase 0, experiments.** Nothing here solves a real board yet.
+**Status: phase 0 evidence complete; awaiting closeout merge.** Experiment
+scripts solve one real-board net.
+IPC-2581 and per-pin terminal-model choices are confirmed by the maintainer;
+the production importer and contact model are not implemented yet.
+See [the result log](docs/DECISIONS.md) for measured results and limitations,
+and the [dependency inventory](docs/dependency-license-audit.md) for the
+current licences and packaging boundaries. Phase 1 starts after the closeout
+branch is merged.
 
 See the [development plan](docs/project-plan.md) for scope, architecture,
 experiments and release gates.
@@ -35,9 +42,9 @@ those tests run there too. The solver never imports the Gmsh Python API.
 | 3 | Annular ring with a tied inner rim and mesh refinement | Passes, see `tests/test_exp03_annular_ring.py` |
 | 4 | Two layer rings connected by a finite via barrel resistor | Passes, see `tests/test_exp04_two_rings.py` |
 | 5 | Current conservation, per-layer via KCL and independent power balance across experiments 1–4 | Passes, see `tests/test_exp05_balances.py` |
-| 6 | KiCad 10 IPC-2581 export against saved native board data | Partial: zone fills, stackup, pin-to-net and vias match on the two-layer StickHub demo; tracks, pad geometry and multilayer boards not audited; importer choice provisional. See `tests/test_exp06_kicad_export.py` |
-| 7 | padne and KiPI reference runs on StickHub | Prepared; blocked on external-tool installation, see [setup](docs/experiment-07-setup.md) |
-| 8 | One net and layer of the real board through geometry cleanup and Gmsh | Not started |
+| 6 | KiCad 10 IPC-2581 export against saved native board data | Export coverage audits and a real-net reader/solve comparison recorded; IPC-2581 confirmed by the maintainer. One board/net is not general importer validation. |
+| 7 | padne real-net reference comparison | Reference run recorded; raw drop discrepancy traced to terminal modelling. KiPI dropped by the maintainer. See [results](docs/DECISIONS.md). |
+| 8 | Real net through geometry cleanup, Gmsh and DC solve | Completed experimentally, including multilayer vias and mesh-convergence checks; direct and IPC-2581 readers compared. See [results](docs/DECISIONS.md). |
 
 An extra regression test, `tests/test_offcentre_via.py`, checks a via placed
 off-centre in a circular sheet, where current crowds onto one side of the rim.
@@ -94,24 +101,25 @@ uv run python experiments/exp06_kicad_export.py --output-dir /tmp/pdnlab-exp06
 uv run python experiments/exp06_kicad_export.py --board /path/to/board.kicad_pcb --output-dir /tmp/pdnlab-exp06-custom
 ```
 
-The audit compares saved fill polygons, explicit stackup thicknesses, netted
-pad references, and via coordinates/diameters/layer spans with IPC-2581 C XML.
-It is a narrow export-coverage check, not a production importer. Tracks and
-pad copper geometry are not compared yet, so the choice of IPC-2581 as the
-importer route is provisional. Refill and save
-your board first; the audit cannot establish whether cached fills are current.
-Plating thickness remains an explicit setup input. PTH/NPTH pad holes and slots
-are not covered by this initial audit.
+The export audit compares saved fills, stackup, pin/net mappings and via holes.
+An additional geometry audit checks tracks, pad copper and pad holes; use
+`--strict` to make it gate the exit code. Unsupported geometry fails that
+audit. The experimental IPC-2581 reader also compares one net's geometry and
+solved drops against the direct board reader. This is not a production importer
+or validation of Altium/OrCAD X exports. Refill and save your board first; the
+audit cannot establish whether cached fills are current. Plating thickness
+remains an explicit setup input.
 
 The KiCad integration test is optional and skips without KiCad 10 and the
 installed StickHub demo. CI currently installs Gmsh, but does not install KiCad;
 the XML inspection unit tests still run there.
 
-Experiment 7 is prepared but remains pending. Neither reference tool is
-installed in the development session, and its terminal cannot resolve GitHub.
-See [experiment 7 setup](docs/experiment-07-setup.md) for separate installation
-commands and the defined source/load comparison. No reference voltages are
-claimed yet.
+Experiment 7 recorded a padne comparison on the private real-board net. The
+raw drops disagree because the terminal models differ; downstream comparisons
+and remaining limitations are recorded in [DECISIONS.md](docs/DECISIONS.md).
+KiPI was dropped from the current plan. The original StickHub reference run
+was not performed. Historical setup instructions remain in
+[experiment 7 setup](docs/experiment-07-setup.md).
 
 ## Layout
 
@@ -120,7 +128,7 @@ claimed yet.
 | `docs/project-plan.md` | Development plan, milestones and validation criteria |
 | `docs/DECISIONS.md` | Experiment results and recommendations |
 | `docs/off-centre-via-reference.md` | Derivation of the off-centre via reference |
-| `docs/experiment-07-setup.md` | Installing padne and KiPI for the reference comparison |
+| `docs/experiment-07-setup.md` | Reference comparison setup and historical installation instructions |
 | `src/pdnlab_dc/` | Solver package |
 | `tests/` | Analytic tests, run on every commit |
 | `experiments/` | Phase 0 experiment scripts, one per experiment |
