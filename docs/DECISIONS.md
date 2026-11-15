@@ -516,3 +516,238 @@ accuracy conclusion can yet be drawn.
   to pass on the downloaded file.
 - Nothing was run. The status stays blocked until both tools have been
   installed and tried on the board.
+
+## 2026-11-15 — Experiment 8: one real net through cleanup, Gmsh and the solver
+
+**Result: passed against the plan's criterion (the real copper meshes), and
+taken further than planned: the net was also solved, with per-via currents and
+a mesh-convergence study. Not compared with another tool or a measurement in
+this experiment. Recommendation: treat the script as a prototype of the
+pipeline, not as the importer, and settle the importer route next.**
+
+The plan asks for one net and layer of a real board through geometry cleanup
+and Gmsh. `experiments/exp08_real_net.py` does that for every layer of one net
+and then solves it:
+
+- It reads the saved `.kicad_pcb` file directly, not the IPC-2581 export that
+  experiment 6 audited. The provisional importer route was therefore not
+  exercised here.
+- Per layer, the net's tracks, pads and saved zone fill are merged into
+  polygons with Shapely (`make_valid`, union, fragments under 1e-6 mm² dropped).
+  Via holes are cut at drill radius plus plating.
+- Each layer is meshed by Gmsh as an external program and assembled with the
+  existing `pdnlab_dc` sheet code. Every via gets one tied rim per contacted
+  layer and one barrel resistor between successive contacted layers. Each pad
+  is one equipotential; a through-hole pin is an ideal lead between layers.
+- The solve returns a transfer-resistance matrix: Z[p, k] is the drop at pin p
+  per ampere drawn at pin k, with the source pins at zero drop.
+
+Case: net +3V3 of the local test board `MAIN_MCU_STM32H743` (four copper
+layers; the net has copper on F.Cu, In2.Cu and B.Cu; the board is not in the
+repository). Setup values, not measured: ρ = 1.724e-8 Ω·m, 25 µm plating,
+copper thickness from the board stackup (35 µm outer, 15.2 µm inner), the
+saved zone fill taken as current, 100 mA at each of the 11 IC supply pins
+(1.1 A in total). Three alternative supply entries were solved.
+
+| Source pins | Largest drop | Self-resistance at the load pins |
+| --- | --- | --- |
+| J4.6, J4.10, J4.13, J4.16 | 3.025 mV | 4.44 to 5.85 mΩ |
+| J1.1 | 2.681 mV | 4.22 to 5.62 mΩ |
+| J5.1 | 2.578 mV | 4.18 to 5.57 mΩ |
+
+These are on the reported mesh: h = 0.5 mm, via holes as 96-sided polygons,
+element size growing 0.15 mm per mm away from holes and from through-hole pads
+that feed copper. For every source the matrix is symmetric to 2.4e-14
+(relative), satisfies Z[p, k] ≤ min(Z[p, p], Z[k, k]), and the source current
+equals the 1.1 A load to 1.2e-12 A.
+
+Per-via results for the J4 source (`experiments/exp08_via_currents.py`):
+
+- The net has 28 vias; 16 carry current and 12 carry none.
+- The four feed vias next to J4 carry 337.6, 315.7, 276.5 and 170.3 mA, which
+  sum to 1.100 A. Eleven vias carry 100 mA each.
+- Highest densities are at the 337.6 mA via (0.3 mm drill): 13.2 A/mm² in the
+  barrel, 20.2 A/mm² averaged over the In2.Cu hole edge, 38.2 A/mm² peak on
+  the B.Cu hole edge. The layer edge, not the barrel, is the smaller
+  cross-section there.
+- Kirchhoff's current law holds at every via rim to 5e-13 A.
+
+Mesh convergence over six levels (the first run without local refinement;
+h = 0.5 mm with 24-, 48- and 96-sided holes; h = 0.25 and 0.125 mm with 96):
+42 of 42 gates pass.
+
+- Per-via current changes by at most 0.71 mA between consecutive refined
+  levels (on a 315 mA via).
+- Largest drop and self-resistance change by at most 0.37 % between
+  consecutive refined levels, over all three sources.
+- The first run had no local refinement. For J4 its numbers hold within
+  0.51 % at every later level (gate: 1 %). For J1 and J5 they were about 1.9 % low (2.630 mV
+  against 2.681 mV for J1) and are superseded: those through-hole pads join
+  In2.Cu through 0.5 mm thermal-relief spokes that the first mesh covered with
+  one or two elements.
+
+**Verification:** 24 tests in three files check the prototype on small
+synthetic boards: a strip against ρL/(Wt); one via joining two strips on
+different layers against a closed form (within 3e-3 unrefined, 6e-4 at
+h = 0.25 mm with 96-sided holes, approached from below); a pad fed through one
+thermal-relief spoke against a closed form (more than 2 % low unrefined,
+within 3e-3 refined); a three-layer via with two loads; a tampered barrel current
+that must fail the conservation check; via-in-pad rejected. The result files
+were computed in a session sandbox with Gmsh 4.12.1 on a copy of the board and
+written to the board's `_exp08` directory; a second sandbox run on
+2026-11-15 reproduced `checks.json` exactly. The maintainer reported 181
+tests passed on his machine on 2026-11-15; whether the board solve has been
+run there is not recorded.
+
+**Limits:**
+
+- One board, one net. The geometry cleanup met no failure on it, so this says
+  little about boards with slivers, notches or unusual pad shapes.
+- Every pad is an equipotential. The padne comparison in the next entry puts
+  0.2 to 0.3 mV of drop inside the J4 card-edge fingers when the terminal is
+  a point at the pad centre; an equipotential pad has none.
+- Refinement covers via holes and through-hole pads. SMD pads joined to a
+  zone through thermal spokes are not refined; this net has none.
+- Only a zone's `thermal_gap` is read, not per-pad or per-footprint relief
+  overrides. Oval holes are rejected. Via-in-pad is rejected by the via
+  current report. Through-hole pins have no barrel resistance.
+- The hole-edge peak density assumes an equipotential rim.
+- The load currents are a uniform assumption, not the board's operating loads.
+- The script is about 650 lines in `experiments/`, outside the `pdnlab_dc`
+  package, and takes its board data from a direct s-expression read.
+
+## 2026-11-15 — Experiment 7: padne reference run on a real net
+
+**Result: padne ran; the raw comparison fails release gate 6 at every pin, and
+the difference is located at the source pads. Downstream of the feed vias the
+two tools agree within gate 6. KiPI was not run and the StickHub benchmark was
+not run. Recommendation: add a terminal model for unsoldered contact pads to
+PDNLab, and do not use padne's pad-centre voltages as a ±5 % reference.**
+
+padne's all-in-one Linux executable installed and reports
+`padne 0.1.dev1+gacab836b1`, the commit the directives were checked against on
+14 November. Its SHA-256 is `6831f466a67c55097c376503d190204610f9ac8498c2d8bce63106a29920d00d`. The bundled KiCad prints
+`PROPERTY_ENUM(): No enum choices defined` assertions on every start; the solve
+completes after them.
+
+The comparison uses the experiment 8 case instead of the prepared StickHub
+benchmark, because PDNLab results and mesh-convergence data already exist for
+it: net +3V3 of the local test board `MAIN_MCU_STM32H743` (not in the
+repository; board file SHA-256
+`d1535d701eec4db47dc4eb7e3bfd08135ed13735c7ec7ec2b5b59c6029d54187`), supply at
+J4.6, J4.10, J4.13 and J4.16, 100 mA at each of the 11 IC supply pins.
+
+padne setup (external directives, schematic directives ignored):
+
+- `VOLTAGE v=3.3V p=J4.6,J4.10,J4.13,J4.16 n=J4.1`
+- eleven `CURRENT i=100mA f=<load pin> t=J4.1`, so every load returns to the
+  source's negative pad and GND copper carries no load current
+- `COPPER conductivity=58004640.37 plating=25u undercut=0`, which is
+  ρ = 1.724e-8 Ω·m and 25 µm plating, the experiment 8 assumptions
+- copper thicknesses from the board stackup (35 µm outer, 15.2 µm inner), as in
+  experiment 8
+- run 1: default mesh (`--mesh-size 0.6`), 64,558 unknowns; run 2:
+  `--mesh-size 0.15`, 283,621 unknowns; other mesh options at their defaults;
+  `scipy` solver backend
+
+Voltages were read from `padne paraview` exports at the mesh vertex that padne
+seeds at each connected pad centre. PDNLab values are the experiment 8 results
+on its refined mesh (h = 0.5 mm, 96-sided holes, growth 0.15).
+
+Drop from the source pads to the load pads, PDNLab minus padne, padne as the
+reference. Gate 6 is abs(difference) ≤ 50 µV + 5 % × abs(padne drop).
+
+| | padne 0.6 mm | padne 0.15 mm |
+| --- | --- | --- |
+| padne drop over the 11 pins | 2.963 to 3.330 mV | 3.037 to 3.411 mV |
+| PDNLab drop over the 11 pins | 2.660 to 3.025 mV | same |
+| Raw difference | −302 to −347 µV (−9.2 to −11.0 %) | −377 to −444 µV (−11.3 to −13.5 %) |
+| Raw gate 6 | 0 of 11 | 0 of 11 |
+| In2.Cu at the four feed vias, below the source pads | padne 0.444 mV, PDNLab 0.158 mV | padne 0.477 mV, PDNLab 0.158 mV |
+| Difference referenced to that plane voltage | −16 to −61 µV (−0.6 to −2.2 %) | −58 to −125 µV (−2.2 to −4.3 %) |
+| Referenced gate 6 | 11 of 11 | 11 of 11 |
+
+**Where the raw difference comes from.** Between each J4 pad and the rim of its
+feed via, on the pad's own layer, padne drops 0.27 to 0.39 mV and PDNLab 0.06
+to 0.11 mV (default padne mesh). The four differences are 0.21 to 0.28 mV, and
+the In2.Cu plane carries a nearly uniform offset of the same size. The two
+tools model a terminal differently:
+
+- padne connects a terminal at the pad centre point. The J4 pads are 0.6 × 2 mm
+  card-edge fingers with the feed via beyond one end, so the current runs along
+  1 mm of finger: 1.67 squares of 35 µm copper, 0.82 mΩ.
+- PDNLab ties the whole pad to one voltage, so that length costs nothing.
+
+With the 1.1 A shared equally by the four fingers, the strip estimate is
+0.23 mV. padne's per-pad currents were not extracted, so this is a check of
+size only.
+
+The plan's reason for an equipotential pad is that solder and the component
+lead short it. That does not hold for a card-edge finger, a test point or any
+pad that is touched by a contact instead of soldered. For such pads PDNLab's
+drop is optimistic; padne's centre point is not exact either, because the real
+contact position along the finger is a property of the mating connector.
+
+**padne's result moves with its mesh.** From 0.6 mm to 0.15 mm every pad-centre
+drop rose by 74 to 98 µV (2.4 to 3.0 %). Release gate 5 allows 10 µV + 1 % for
+one halving of the element size. For the same case PDNLab's largest drop is
+3.0245 mV at h = 0.5 mm and 3.0266 mV at h = 0.125 mm (0.07 %), and between
+consecutive refined levels it changes by at most 0.13 %, self-impedance by at
+most 0.28 % (`_exp08/v3v3_via_checks.json`). A point current source in a sheet
+has a voltage that grows with ln(1/h) as the mesh is refined: for a mesh four
+times finer the term is I·R_sheet/(2π)·ln 4. That is 30 to 37 µV for the three
+B.Cu fingers, which carry 0.28 to 0.34 A in the PDNLab solution, and 18 µV for
+the F.Cu finger at 0.17 A. The observed growth on the source side is 34 µV at
+the plane reference and 41 to 46 µV at the feed-via rims on the pad layers.
+Two mesh sizes cannot show the logarithmic trend itself.
+
+The referenced difference also grew, by 40 to 64 µV. The same point-source
+term for a 100 mA load pad is 11 µV, so most of this growth is not explained.
+padne also connects each via through 16 rim points per layer; that was not
+isolated.
+
+`experiments/exp07_padne_compare.py` reproduces these numbers from the board
+file, the experiment 8 output directory and the padne exports. The reference
+ring is 0.15 mm wide, starting at the PDNLab hole radius; widths of 0.10 and
+0.30 mm move the referenced difference by at most 6 µV. The directive file,
+both solve logs, both solutions and the comparison JSON are in the test
+board's `_exp07` directory, which is not in the repository.
+
+A fault found on the way: `experiments/exp07_reference_tools.py` wrote
+`plating=25um` for the StickHub benchmark. padne's value parser knows the units
+A, V and R only, takes the trailing `m` as milli and then fails on `25u`. The
+valid spelling is `plating=25u` (metres). The review note of 14 November
+checked the parameter names and missed this. The script and its test are
+corrected; the StickHub solve itself has still not been attempted.
+
+**Verification:** six new tests cover the export reader (piece joining, sign of
+y), the pad-centre lookup, the ring average, the gate and the feed-via choice
+on synthetic data. They need no padne, Gmsh or board. The comparison was run
+in a session sandbox on copies of the files, where the suite gave 145 passed
+and 21 skipped (no Gmsh or KiCad there). It has not been run on the
+maintainer's machine since these changes.
+
+**Limits:**
+
+- One board, one net, one load case. Only the J4 source case was compared; the
+  J1 and J5 cases, where the source is a through-hole pin, were not. padne
+  models a through-hole pad as a via with a barrel, PDNLab as an ideal lead.
+- The referenced comparison assumes the two tools split the current between
+  the four feed vias similarly. padne's via currents were not extracted.
+- Other model differences were not separated: padne cuts each hole at the
+  drill radius and PDNLab at drill radius plus plating; padne takes the barrel
+  length as the stackup thickness from the bottom of the upper layer to the
+  bottom of the lower layer and adds a lateral barrel term; PDNLab uses the
+  distance between layer centres.
+- padne is not known to be validated against measurement, so agreement
+  downstream of the feed vias is a cross-check, not proof of accuracy.
+- The PDNLab numbers come from the experiment 8 result files
+  (`_exp08/checks.json` and the per-layer fields), described in the entry
+  above.
+
+**Open for the maintainer:**
+
+- Terminal model for contact pads: per-pin choice between a soldered pad
+  (equipotential) and a contact (a point or small area at a stated position).
+- Whether the padne half of experiment 7 is closed with this result, and
+  whether KiPI is still wanted.
