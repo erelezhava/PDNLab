@@ -329,3 +329,124 @@ uv run pytest -q tests/test_offcentre_via.py
 so agreement shows the tie, the assembly and the mesh handle a non-uniform rim
 current. It does not show that an equipotential rim represents a real plated
 barrel; that needs the full-3D coupon or measurement.
+
+## 2026-11-14 — Experiment 6: KiCad 10 IPC-2581 export coverage
+
+**Result: the audited items match on the sampled board. Recommendation
+(provisional): keep IPC-2581 as the candidate importer route and continue to
+experiment 7. The route is not settled: tracks, pad copper geometry and a
+multilayer board have not been audited (see the review notes below).**
+
+No user board was present in the repository. The sample is the real routed
+two-layer StickHub demo installed with KiCad, read from
+`/usr/share/kicad/demos/stickhub/StickHub.kicad_pcb`. It has 94 footprints, five
+zones and an explicit stackup. Its saved file identifies generator version
+`9.99`; the export in this experiment was performed by KiCad **10.0.8**. The
+source was not modified. No third-party board design has been copied into this
+repository.
+
+Source SHA-256:
+`cee5a90f8803791cc55498d2576ed1f3416060d37701a02d4ec2937073c76051`.
+
+Command:
+
+```sh
+kicad-cli pcb export ipc2581 --units mm --precision 6 --version C --output /tmp/pdnlab-exp06/board.xml /usr/share/kicad/demos/stickhub/StickHub.kicad_pcb
+```
+
+The inspection compares actual native-board data against exported values,
+rather than checking only whether XML element names exist.
+
+| Required data | Observation | Result |
+| --- | --- | --- |
+| Zone fills | All 11 saved fill polygons matched exported contour vertex cycles, with their net and copper layer | Pass |
+| Stackup | F.Cu and B.Cu each 0.035 mm; dielectric 1.510 mm; both mask layers 0.010 mm; exported values match | Pass |
+| Pin-to-net | All 266 unique (reference, pad number, net) mappings match, with no unexpected mappings | Pass |
+| Via holes | All 87 vias match by position, diameter, net and start/end layer span; diameters are 0.3 and 0.4 mm | Pass |
+
+Details and implications:
+
+- KiCad's export places pin references under netted copper `Set`/`Pad` elements;
+  this file has no `LogicalNet` elements. A future importer must follow the
+  observed netted feature structure, not assume a logical-net section exists.
+- Saved fill polygons appear as contours on the appropriate copper layer.
+  Their cycles match after reversing the exported Y axis, ignoring the start
+  vertex and winding direction, and rounding coordinates to a 1 nm grid.
+- `dielectric 1` is exported as `DIELECTRIC_1`. The audit normalises that naming
+  change when comparing explicit thicknesses.
+- Via holes occur on a drill layer with a `Span` from F.Cu to B.Cu. Diameter
+  values equal the source board's via hole values. KiCad's
+  [10.0 PCB Editor manual](https://docs.kicad.org/10.0/en/pcbnew/pcbnew.html)
+  identifies the via Hole property as the finished-hole diameter. Therefore
+  the planned default interpretation remains finished hole: r_i = d/2 and
+  r_o = d/2 + plating.
+- **Plating thickness is not established by this audit.** It must remain an
+  explicit setup input; the experiment does not validate 25 µm or another
+  universal manufacturing default.
+- The saved stackup includes soldermask thickness in its 1.6 mm overall
+  thickness. Barrel length must use the copper-layer centre positions, not
+  the board's overall thickness.
+
+The export command and options are documented in the
+[KiCad 10 CLI reference](https://docs.kicad.org/10.0/en/cli/cli.html).
+
+Reproduce with:
+
+```sh
+uv run pytest -q
+uv run python experiments/exp06_kicad_export.py --output-dir /tmp/pdnlab-exp06
+# An explicitly selected board can be inspected instead:
+uv run python experiments/exp06_kicad_export.py --board /path/to/board.kicad_pcb --output-dir /tmp/pdnlab-exp06-custom
+```
+
+The output includes `board.xml` and `results.json` with source/export hashes,
+KiCad version, exact command, source/export thicknesses, coverage counts,
+mismatches, scope limits and route decision. The export hash can change between
+runs because the XML contains export history metadata.
+
+**Verification:** 118 tests passed locally, with no skips or warnings. Mutation
+tests change polygon coordinates, thicknesses, references, pin numbers, nets,
+via diameters, positions and spans without changing counts; the corresponding
+gates fail. Unsupported revision, units or contour transforms are rejected.
+The integration test also checks the source board hash before and after export.
+CI has not been run remotely and does not currently install KiCad; the native
+export integration test skips there while the inspection unit tests run.
+
+**Limits:** this is a narrow export audit, not a finished importer. It covers
+explicit stackups, saved linear fill polygons, netted pad identities and
+circular vias. It does not check cached-fill freshness, PTH/NPTH pad holes,
+slots, component-pad coordinate transforms, actual intermediate-layer via
+contacts, arbitrary net/layer renaming or exporter behaviour on every board.
+The next steps must broaden these cases as needed. No fallback parser is
+selected on the evidence from this sample, and no real-board DC solve is
+claimed.
+
+### Review notes (Claude, 2026-11-14)
+
+The export itself was not re-run in review, because no KiCad 10 was available
+there. What was confirmed independently:
+
+- The board hash above equals the hash of `demos/stickhub/StickHub.kicad_pcb`
+  at tag `10.0.8` of the KiCad source mirror.
+- Running the native-side parser on that file reproduces the source counts: 94
+  footprints, 5 zones, 11 fill polygons, 266 pin-to-net mappings, 87 vias.
+
+What limits the conclusion:
+
+- **Tracks are not audited.** The board has 1,113 track segments and 180 track
+  arcs. The +5V net alone has 106 segments and 14 arcs, about 80 mm of track,
+  against two zone fills. A DC solve of that net depends on the tracks.
+- **Pad copper geometry is not audited.** Pin-to-net identity is compared; pad
+  shapes, positions and rotations are not.
+- **Two copper layers, through vias only.** Nothing here exercises inner
+  layers, several dielectrics, or blind and buried via spans. The project
+  target is 8 to 12 layers.
+- **The board file was saved by a 9.99 development build** (file format
+  version 20250907). A board saved by a KiCad 10 release has not been tried.
+- **Finished-hole convention.** The manual page cited above could not be opened
+  in review. KiCad forum and developer-list posts agree that KiCad's hole value
+  is the finished size, so the default stays as planned, but treat the manual
+  citation as unverified.
+
+Before the importer route is settled: add tracks (segments and arcs) and pad
+geometry to the audit, then run it on a multilayer board saved by KiCad 10.

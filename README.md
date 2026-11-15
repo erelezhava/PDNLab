@@ -35,6 +35,7 @@ those tests run there too. The solver never imports the Gmsh Python API.
 | 3 | Annular ring with a tied inner rim and mesh refinement | Passes, see `tests/test_exp03_annular_ring.py` |
 | 4 | Two layer rings connected by a finite via barrel resistor | Passes, see `tests/test_exp04_two_rings.py` |
 | 5 | Current conservation, per-layer via KCL and independent power balance across experiments 1–4 | Passes, see `tests/test_exp05_balances.py` |
+| 6 | KiCad 10 IPC-2581 export against saved native board data | Partial: zone fills, stackup, pin-to-net and vias match on the two-layer StickHub demo; tracks, pad geometry and multilayer boards not audited; importer choice provisional. See `tests/test_exp06_kicad_export.py` |
 
 An extra regression test, `tests/test_offcentre_via.py`, checks a via placed
 off-centre in a circular sheet, where current crowds onto one side of the rim.
@@ -81,6 +82,28 @@ Each experiment now includes current and power checks in its pass/fail result.
 JSON outputs include residuals, tolerances and individual via-rim results where
 applicable. Sheet heat is integrated from triangle voltage gradients; resistor
 heat is computed from branch voltage drops.
+
+Run the export inspection with KiCad 10 installed:
+
+```sh
+# Uses the installed KiCad StickHub demo without modifying it:
+uv run python experiments/exp06_kicad_export.py --output-dir /tmp/pdnlab-exp06
+# Or audit your own saved board:
+uv run python experiments/exp06_kicad_export.py --board /path/to/board.kicad_pcb --output-dir /tmp/pdnlab-exp06-custom
+```
+
+The audit compares saved fill polygons, explicit stackup thicknesses, netted
+pad references, and via coordinates/diameters/layer spans with IPC-2581 C XML.
+It is a narrow export-coverage check, not a production importer. Tracks and
+pad copper geometry are not compared yet, so the choice of IPC-2581 as the
+importer route is provisional. Refill and save
+your board first; the audit cannot establish whether cached fills are current.
+Plating thickness remains an explicit setup input. PTH/NPTH pad holes and slots
+are not covered by this initial audit.
+
+The KiCad integration test is optional and skips without KiCad 10 and the
+installed StickHub demo. CI currently installs Gmsh, but does not install KiCad;
+the XML inspection unit tests still run there.
 
 ## Layout
 
