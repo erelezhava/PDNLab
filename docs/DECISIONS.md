@@ -1469,3 +1469,110 @@ suite; no new real-board solve, export, standalone benchmark, remote CI or
 KiCad 11 compatibility run was performed. No dependency or private board data
 changed. README and the contract describe the development interface. Changes
 remain uncommitted; no files were staged, pushed or merged.
+
+## 2026-11-16 — Phase 2 small task: IPC-2581 header and stackup metadata reader
+
+**Result / Recommendation: `pdnlab_dc.ipc2581_metadata` reads source provenance
+and ordered copper layers from IPC-2581 revision C files in millimetres with
+one explicit stackup. Measured in the assistant's cloud workspace, not on
+Erekle's machine: focused tests 61 passed in 0.16 s; full suite 437 passed,
+4 skipped, 19.59 s (the same commit before this change: 376 passed, 4 skipped).
+Only hand-written XML was parsed; no real export, numerical solve or CI run.
+Recommendation: rerun the suite locally and read one real KiCad 10 export
+before starting the geometry increment. The Z origin, the recorded Y reversal
+and the layer-function policy below are recommendations for Erekle to approve
+or change, not project decisions.**
+
+Verified starting state. The local checkout is on `phase2-board-model` at
+`9a3c0c5442903d98ce103673662958cfb4781a86` ("Add immutable neutral board
+records and validation"), and its local remote-tracking ref has the same hash.
+65 of the 66 tracked files were compared byte for byte with that commit and
+are identical; `tests/test boards/.gitignore` was not read. On GitHub the
+commit is the head of PR #10, which is merged into `main` at
+`7a38317119efa1b2bc3c72eef197d23bcc7ecb95`; the remote `phase2-board-model`
+branch no longer exists, and local `main` is still at `a8dadf5`. So the
+neutral-model increment is pushed and merged, and this work should start from
+current `origin/main`, whose tree equals `9a3c0c5`. This assistant merged
+nothing. Phase 2 CI status was not looked up.
+
+Implemented `parse_ipc2581_metadata(bytes)` and `read_ipc2581_metadata(path)`,
+returning a frozen `Ipc2581Metadata(source, copper_layers)`. It is deliberately
+not a `BoardModel`: it has no nets, features, pads or drills, and the first
+`SourceInfo.assumptions` entry says they were not read. The module uses the
+standard library plus `pdnlab_dc.board`; it does not import the experiments.
+
+Checks, each raising `ValueError` with the layer or element named:
+
+- Root `IPC-2581` in namespace `http://webstds.ipc.org/2581`, `revision="C"`;
+  exactly one `Ecad`, `CadHeader` and `CadData`; `CadHeader` units
+  `MILLIMETER`. A `Content/Dictionary*` entry declaring other units is also
+  rejected, so the recorded `mm` holds for the dictionaries the geometry
+  reader will use. Zip-compressed input and malformed XML are rejected.
+- `CadData/Layer`: nonblank unique `name`, a `layerFunction`. Copper is
+  `CONDUCTOR`. `SIGNAL`, `PLANE`, `MIXED`, `CONDFOIL` and `CONDFILM` raise, so
+  copper under another function is never silently dropped.
+- Exactly one `Stackup` with exactly one `StackupGroup`. Every `StackupLayer`
+  references a defined layer once and has a unique nonnegative integer
+  `sequence`; the `sequence` attribute orders the stack, not document order.
+  Every `CONDUCTOR` layer must be in the stackup.
+- From the first to the last copper row, only `CONDUCTOR` and `DIEL*` rows are
+  allowed, each with a finite positive decimal thickness, and two copper rows
+  need a dielectric between them. Rows outside that span (mask, paste, legend,
+  coating) are ignored and their thickness is not validated.
+
+Conventions recorded in `SourceInfo.assumptions`: Z is zero at the outer face
+of the first copper layer in stackup sequence and increases with sequence;
+`z_m` is the copper centre, as in the exp08 readers. Thicknesses are summed
+exactly as decimals in millimetres and rounded once to metres. Layer `id` and
+`label` are both the exported layer name. `xy_transform` is
+`(1e-3, 0, 0, 0, -1e-3, 0)`: millimetres to metres with IPC Y reversed once,
+the frame the contract recommends. It is recorded only; no geometry exists
+here to apply it to. The input hash is SHA-256 of the bytes that were parsed.
+`exporter_version` is `"<name> <revision>"` from
+`HistoryRecord/FileRevision/SoftwarePackage` when the file declares exactly one
+package with both attributes, otherwise `None`; it is the file's own claim.
+
+Tests in `tests/test_ipc2581_metadata.py` use an asymmetric four-copper stack
+(35/17.5/70/18 um copper, 0.1/1.24/0.2 mm dielectrics, masks outside) with
+hand-computed centres 17.5, 143.75, 1427.5 and 1671.5 um, and the different
+centres obtained when the sequence is reversed. They also cover shuffled
+document order, ignored outer rows including zero-thickness coating rows, a
+single copper layer, exponent/padded decimals, hash/exporter provenance, 48
+parametrized rejections for wrong namespace/revision/units and missing,
+duplicate or invalid header, layer and stackup data, and truncated, empty,
+compressed and non-byte input. Nine deliberate one-line bugs (Z
+origin, half thickness, ordering, Y sign, unit scale, hash input, exporter
+rule, revision check, dielectric accumulation) each made at least one test
+fail.
+
+Validation commands, run on a clone of `9a3c0c5` plus these files (Python
+3.13.18, numpy 2.5.5, scipy 1.18.1, shapely 2.2.0, pytest 9.2.0, Gmsh 4.12.1):
+
+```sh
+python -m pytest -q tests/test_ipc2581_metadata.py   # 61 passed
+python -m pytest -q                                  # 437 passed, 4 skipped
+```
+
+The full suite also gave 437 passed, 4 skipped under Python 3.11.18 and 3.14.6.
+The four skips need KiCad CLI, the StickHub project or local private boards,
+none of which exist in that workspace. `git diff --check` passes. Not run:
+anything in Erekle's `.venv`, any real or private board, any export, any
+solve, remote CI, KiCad 11.
+
+Limitations and open points:
+
+- No real export has been read by this module. The fixtures follow the layout
+  of the existing audit fixtures. Element names for the exporter version were
+  taken from the KiCad development-branch exporter source, which is not
+  export evidence for KiCad 10 and not compatibility validation.
+- Dielectrics split into sublayers are untested; check their exported
+  thickness and sequence values on a real file before relying on Z.
+- Rigid-flex or multi-group stackups, inch/micron files and revision B are
+  rejected, not converted. `overallThickness`, layer `side`, `Step`, profile
+  and datum are not read. Which copper is the physical top is not asserted.
+- Parsing uses `xml.etree.ElementTree` without extra entity hardening; inputs
+  are assumed to be the user's own exports.
+
+Stopped here as instructed: no tracks, pads, zones, drills, nets, cleanup,
+meshing, setup files, CLI or real-board solve. No dependency or private board
+data changed. Changes are uncommitted; nothing was staged, pushed or merged.
