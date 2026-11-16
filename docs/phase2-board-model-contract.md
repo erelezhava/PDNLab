@@ -128,3 +128,57 @@ incomplete or ambiguous. `input_sha256` is the hash of the parsed bytes.
 These conventions are recommendations pending Erekle's approval. The reader
 has been run on synthetic XML only (`tests/test_ipc2581_metadata.py`); reading
 a real KiCad 10 export, dielectric sublayers and other exporters are untested.
+
+## Nets and filled-zone contour reader (2026-11-16)
+
+`pdnlab_dc.ipc2581_fills` is the second XML increment. It reuses
+`parse_ipc2581_tree` from the metadata reader (one parse; header, units, layers
+and provenance checked there only) and returns `Ipc2581ZoneFills`: `source`,
+`copper_layers`, `nets`, `fills`, `unread`, `uninspected_layers` and `scope`.
+It is not a `BoardModel` and is not a complete board.
+
+```python
+from pdnlab_dc.ipc2581_fills import read_ipc2581_fills
+
+fills = read_ipc2581_fills("board.xml")
+[(f.id, f.net_id, f.layer_id, f.geometry.area) for f in fills.fills]
+fills.unread              # counts of tracks, pads and vias, not read yet
+fills.uninspected_layers  # drill, slot, mask, ... LayerFeatures not looked at
+```
+
+What KiCad 10.0.8 writes, from its exporter source (`pcb_io_ipc2581.cpp` at tag
+`10.0.8`); this is source reading, not export evidence:
+
+| Question | Finding | Reader behaviour |
+| --- | --- | --- |
+| Where nets are listed | Only as `Set@net`. `generateLogicalNets` exists but is not called; no `PhyNet`/`PhyNetGroup`. `net` is omitted for net code 0. Names pass through `genString`: `:` becomes `_`, and `_N` is appended on a clash with another generated name. | Nets are the distinct `Set@net` values in the Step, with exported names. A copper `Set` without `net` is unassigned, `net_id=None`. `LogicalNet`/`PhyNet`/`PhyNetGroup` raise. |
+| Which copper `Contour`s are zone fills | Board zones: `Contour` in the net's `Set/Features/UserSpecial`. Also `Contour`s in teardrop sets (`geometryUsage="TEARDROP"`), copper text (`"TEXT"`) and footprint-owned zones (`Set@componentRef`, no `net`). Board graphic polygons/rectangles/circles are `UserPrimitiveRef`s to the user dictionary. | Only the first kind is read as `fill`. Teardrops, copper text, footprint graphics and `UserPrimitiveRef` shapes raise, with or without a net. A footprint-owned zone with a `Contour` raises because its net is not exported. |
+| Mixed sets | One net `Set` per layer holds fills, track `Line`/`Arc` and via `Pad`s (`padUsage="VIA"`); pin pads go in a second `Set`. Board graphic segments/arcs share the `UserSpecial` with tracks and are indistinguishable from them. | `Line`, `Arc`, `Pad` (pin or via) are counted by kind, layer and net in `unread`, not read or validated; the track and pad increments read them. |
+| Fill topology | The zone filler calls `Fracture()`: each fill is one outline that reaches every hole along a zero-width slit (an edge and, later, the same edge reversed). Shapely rejects such a ring as self-intersecting. | Each reversed edge pair is removed, splitting the ring into one outline and its holes. This is the criterion of KiCad's own `unfractureSingle`. No vertex is moved; area is unchanged. Explicit `Cutout`s are kept as holes. |
+
+Supported fill geometry, anything else raising with layer, net and element path:
+`Contour` = one `Polygon` then `Cutout`s; rings of `PolyBegin` then
+`PolyStepSegment` with exactly `x` and `y`, closed, finite decimals; no `Xform`
+anywhere between the `LayerFeature` and the `Contour`, and no nonzero
+`Location`. Edge pairs must nest; crossing pairs, repeated or zero-length edges,
+degenerate or zero-area rings, more than one outline after slit removal, and an
+invalid polygon raise. Unknown elements, other namespaces, unknown `Set`
+attributes (for example `polarity`), unknown `geometryUsage` or `padUsage`,
+duplicate or undefined `LayerFeature` layers and more than one `Step` raise.
+
+Coordinates are exact decimals in millimetres; `SourceInfo.xy_transform` is
+applied once and each stored value rounded once to metres. One `CopperFeature`
+per `Contour`, kind `fill`, ID `fill:<layer>:<k>` with `k` counting fills on that
+layer in document order, `source_ref` the element path, for example
+`LayerFeature[@layerRef='F.Cu']/Set[1]/Features[1]/UserSpecial[1]/Contour[2]`.
+IDs are stable for the same file, not across re-exports. Overlapping fills are
+left overlapping; nothing is unioned. Unread content inside counted elements is
+not validated; that belongs to the track and pad increments.
+
+Erekle's rule (2026-11-16): copper on a net to be simulated must be included,
+so only content a planned increment reads (tracks, pads, vias) may be counted;
+everything else on copper raises. Footprint-owned zone fills raise; move such
+zones to board level. Teardrops raise under the same rule (none in the
+experiment-6 export). Erekle approved the slit handling on 2026-11-16.
+Synthetic XML only (`tests/test_ipc2581_fills.py`); no real export has been
+read by this module.

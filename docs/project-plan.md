@@ -319,6 +319,21 @@ the evidence and carry-forward limits. This acceptance does not establish
 production-import readiness or hardware/3D accuracy. Phase 2 is not started by
 this documentation update.
 
+### Phase 2 increments (in progress)
+
+The IPC-2581 importer is built in small increments, each with its own branch,
+result-log entry and synthetic tests; none of them yet produces a complete
+`BoardModel`.
+
+1. Neutral board records and validation (`pdnlab_dc.board`). Merged.
+2. Header and stackup metadata reader (`pdnlab_dc.ipc2581_metadata`). Merged;
+   read on one real KiCad 10 export by Erekle.
+3. Nets and filled-zone contours (`pdnlab_dc.ipc2581_fills`). Implemented on
+   branch `phase2-ipc2581-zone-fills`, synthetic XML only.
+4. Planned, each separate: tracks (needs a decision on segment-to-polygon
+   approximation), pads, drills. Cleanup, meshing, setup files, CLI and
+   real-board solves come after.
+
 ### Phase 0 experiments
 
 Each experiment is small enough for one or two sittings. After each one, record

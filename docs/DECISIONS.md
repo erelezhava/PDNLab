@@ -1577,6 +1577,141 @@ Stopped here as instructed: no tracks, pads, zones, drills, nets, cleanup,
 meshing, setup files, CLI or real-board solve. No dependency or private board
 data changed. Changes are uncommitted; nothing was staged, pushed or merged.
 
+phase2-ipc2581-zone-fills
+## 2026-11-16 — Phase 2 small task: IPC-2581 nets and filled-zone contours
+
+**Result / Recommendation: `pdnlab_dc.ipc2581_fills` returns `Net` records and
+one `CopperFeature` of kind `fill` per zone contour, in metres with holes. It
+counts tracks, pads and vias for the next increments, and raises on any other
+copper. Measured in the assistant's cloud workspace, not on Erekle's machine:
+focused tests 59 passed in 0.28 s; full suite 496 passed, 4 skipped, 24 to 30 s
+on Python 3.11.18, 3.13.18 and 3.14.6 (the same commit before this change: 437
+passed, 4 skipped). Only hand-written XML was parsed. Erekle decided the
+treatment of copper other than fills, tracks and pads (below) and approved the
+slit handling. Recommendation: run the reader
+on the real experiment-6 export before the track increment.**
+
+Verified starting state. `origin/main` is `33439ad` (merge of PR #11). Its
+tests workflow on `main` (run 43796870347, job `pytest`) concluded `success`
+for that commit. Erekle's checkout is on `docs/metadata-real-export-check`
+(read from his `.git/HEAD`); his `docs/DECISIONS.md` is byte-identical to that
+branch's pushed head `ff1ae29`, so the real-export entry is committed and
+pushed. It is in open PR #12, whose CI run 43802617912 concluded `success`;
+PR #12 is not merged. This work branches from `origin/main`, so it does not
+contain that entry. This assistant merged nothing.
+
+Open questions settled by reading KiCad's exporter source,
+`pcbnew/pcb_io/ipc2581/pcb_io_ipc2581.cpp` at tag `10.0.8` (commit
+`e432beac2668303194ba2040274f9e5efe773fc0`), and the zone filler at the same
+tag. This is source reading, not export evidence:
+
+- Nets are written only as `Set@net`. `generateLogicalNets` is defined but
+  never called and there is no `PhyNet`/`PhyNetGroup` output. `net` is left
+  out for net code 0, which is how "no net" is marked. Names go through
+  `genString`: in revision C `:` becomes `_`, and `_N` is appended if the name
+  clashes with another generated name, so exported net names can differ from
+  KiCad's.
+- Copper `Contour`s are not all zone fills. Board zones are `Contour`s in the
+  net's `Set/Features/UserSpecial`. Teardrops, copper text (knockout glyphs)
+  and footprint-owned zones get their own `Set`, marked by
+  `geometryUsage="TEARDROP"`, `"TEXT"` or a `componentRef` with no `net`.
+  Board graphic polygons, rectangles and circles are `UserPrimitiveRef`s into
+  the user dictionary.
+- One net `Set` per layer mixes fills, track `Line`/`Arc` and via `Pad`s
+  (`padUsage="VIA"`); pin pads go in a second `Set`. Board graphic segments
+  and arcs land in the same `UserSpecial` as tracks and cannot be told apart.
+- The zone filler calls `Fracture()`, so each exported fill is one ring that
+  reaches every hole along a zero-width slit: an edge followed later by the
+  same edge reversed. Shapely 2.2.0 reports such a ring invalid ("Ring
+  Self-intersection"), so a strict no-repair reader would reject every real
+  fill with a hole. Consistent with this, experiment 6 matched all 11 saved
+  fill polygons of the real board against exported vertex cycles without
+  using `Cutout`s.
+
+Implemented `parse_ipc2581_fills(bytes)` / `read_ipc2581_fills(path)`. The
+metadata module gained `parse_ipc2581_tree`, returning the parsed root with the
+metadata, so header, units, layers and provenance are parsed once and checked
+only there; its public behaviour and tests are unchanged. The result,
+`Ipc2581ZoneFills`, holds `source`, `copper_layers`, `nets`, `fills`, `unread`,
+`uninspected_layers` and a `scope` text saying tracks, pads, vias and drills
+were not read. It is not a `BoardModel`;
+one is built internally only to reuse its ID and reference checks.
+
+- Fills: `Polygon` rings and `Cutout`s of `PolyBegin` and `PolyStepSegment`
+  only, closed, exact decimals; no `Xform` and no nonzero `Location` on any
+  containing element. The recorded transform is applied once and each value
+  rounded once to metres. One feature per `Contour`; ID `fill:<layer>:<k>`,
+  `source_ref` the element path. Nothing is unioned, simplified or repaired;
+  an invalid polygon raises with layer, net and path.
+- Counted in `unread` by kind, layer and net, without reading or validating
+  their geometry, because the next increments read them: track segments and
+  arcs (copper graphic segments and arcs are indistinguishable from tracks and
+  will be read with them), pads and via pads. Non-copper `LayerFeature`s are
+  listed in `uninspected_layers`.
+- Raise: teardrops, copper text, footprint graphics and `UserPrimitiveRef`
+  board graphic shapes on copper, with or without a net; footprint-owned zone
+  fills; curved steps, transforms, offsets, unknown elements or namespaces,
+  unknown `Set` attributes (such as `polarity`), `geometryUsage` or
+  `padUsage` values, net lists, blank net names, duplicate or undefined
+  `LayerFeature` layers, other than one `Step`.
+
+Decisions by Erekle (2026-11-16), after the first draft of this reader counted
+teardrops, copper text and graphics instead:
+
+- Any copper on a net that is to be simulated must be included. So no copper
+  may be counted and left out unless a planned increment reads it; copper
+  text and graphics are not on his copper layers, and they now raise. The
+  assistant applied the same rule to teardrops, which carry a net: they raise
+  until a reader for them is agreed. Erekle checked the experiment-6 export:
+  it contains no `geometryUsage="TEARDROP"` set, so no teardrop fixture is
+  needed now.
+- A footprint-owned zone fill raises, because the export drops its net; the
+  workaround is to move the zone to board level.
+
+- Approved: slit handling. Each edge
+whose exact reverse is also an edge is removed, splitting the ring into one
+outline and its holes (the criterion of KiCad's `unfractureSingle`). Pairs must
+nest, exactly one ring may keep the outline's orientation, and the result must
+be a valid polygon; otherwise it raises. No vertex moves and the area is
+unchanged. Without this, real fills with holes cannot be read at all under the
+no-repair rule.
+
+Tests in `tests/test_ipc2581_fills.py` use an asymmetric five-vertex outline at
+an asymmetric position with every vertex checked in metres, an explicit
+cutout, KiCad's slit form with one hole, with two chained holes, and starting
+inside a hole, two nets on two layers plus unassigned copper and a net seen only
+on a drill layer, stable IDs and paths, the unread counts and scope, 40
+parametrized rejections and 5 for teardrop, text and graphic copper. Ten
+deliberate one-line bugs each made at least one test fail: Y not reversed (4
+failed), Y reversed twice (4), millimetres kept (4), explicit cutout dropped
+(3), slit holes dropped (2), slits not split (13), nonzero `Location` ignored
+(3), a net invented for unassigned copper (11), teardrop/text/footprint-graphic
+sets counted instead of raising (3), board graphic shapes counted (2).
+
+Validation commands, run on a clone of `33439ad` plus these files (numpy 2.5.4,
+scipy 1.18.1, shapely 2.2.0, pytest 9.2.0, Gmsh 4.12.1):
+
+```sh
+python -m pytest -q tests/test_ipc2581_fills.py   # 59 passed
+python -m pytest -q                               # 496 passed, 4 skipped
+```
+
+The four skips need KiCad CLI, the StickHub project or local private boards.
+`git diff --check` passes. One 200,000-vertex synthetic outline took 1.84 s,
+so a large board with millions of fill vertices may take tens of seconds. Not
+run: anything in Erekle's `.venv`, any real or private export, any solve,
+remote CI for this branch, KiCad 11.
+
+Limitations: the exporter findings come from one KiCad version's source, not
+from files; fills are taken as saved, not checked for freshness; feature IDs
+depend on document order, so they are stable for one file, not across
+re-exports; overlapping fills of the same net stay overlapping; content that
+is only counted is not validated; parsing uses `xml.etree.ElementTree` without
+extra entity hardening.
+
+Stopped here as instructed: no tracks, pads, drills, cleanup, meshing, setup
+files, CLI or real-board solve. No dependency or private board data changed.
+
 ## 2026-11-16 — Metadata reader on one real KiCad 10 export; conventions approved
 
 **Result / Recommendation: Erekle ran `read_ipc2581_metadata` on the
@@ -1606,3 +1741,4 @@ GitHub shows PR #11 merged into `main` at
 commit `843aa5b`. This assistant merged nothing and did not verify the CI
 result for that commit. No code or test changed in this documentation-only
 entry.
+main
