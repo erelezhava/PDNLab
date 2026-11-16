@@ -25,15 +25,18 @@ from pdnlab_dc.board import CopperLayer, SourceInfo
 NAMESPACE = "http://webstds.ipc.org/2581"
 # Source XY (mm) -> stored SI XY (m), in SourceInfo order (a, b, tx, c, d, ty).
 XY_TRANSFORM = (1e-3, 0.0, 0.0, 0.0, -1e-3, 0.0)
-ASSUMPTIONS = (
-    "Header and stackup metadata only: nets, copper geometry, pads and drills were not read.",
-    "xy_transform (source mm to stored m, IPC Y reversed once) is recorded for the geometry "
-    "reader and has not been applied to anything.",
+# Conventions shared with readers that build on this one (ipc2581_fills).
+CONVENTIONS = (
     "Z is zero at the outer face of the first copper layer in stackup sequence and increases "
     "with sequence; z_m is each copper centre.",
     "Copper layers are layerFunction CONDUCTOR; stackup rows outside the copper span do not "
     "contribute to Z.",
 )
+ASSUMPTIONS = (
+    "Header and stackup metadata only: nets, copper geometry, pads and drills were not read.",
+    "xy_transform (source mm to stored m, IPC Y reversed once) is recorded for the geometry "
+    "reader and has not been applied to anything.",
+) + CONVENTIONS
 
 _MM = Decimal("0.001")
 _DECIMAL = re.compile(r"[+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?")
@@ -157,6 +160,14 @@ def _exporter_version(root):
 
 def parse_ipc2581_metadata(data):
     """Provenance and ordered copper layers from the bytes of an IPC-2581 C file."""
+    return parse_ipc2581_tree(data)[1]
+
+
+def parse_ipc2581_tree(data):
+    """(parsed root element, Ipc2581Metadata) after the checks above, from one parse.
+
+    For readers that need more of the same file; they must not repeat these checks.
+    """
     if not isinstance(data, (bytes, bytearray)):
         raise TypeError("input must be the file's bytes, so that the recorded hash is the source's")
     data = bytes(data)
@@ -184,7 +195,7 @@ def parse_ipc2581_metadata(data):
     layers = _copper_layers(_stack_rows(cad, functions), functions)
     source = SourceInfo(hashlib.sha256(data).hexdigest(), "IPC-2581", revision, "mm",
                         XY_TRANSFORM, _exporter_version(root), ASSUMPTIONS)
-    return Ipc2581Metadata(source, layers)
+    return root, Ipc2581Metadata(source, layers)
 
 
 def read_ipc2581_metadata(path):
