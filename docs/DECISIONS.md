@@ -1578,6 +1578,37 @@ meshing, setup files, CLI or real-board solve. No dependency or private board
 data changed. Changes are uncommitted; nothing was staged, pushed or merged.
 
 phase2-ipc2581-zone-fills
+## 2026-11-16 — Metadata reader on one real KiCad 10 export; conventions approved
+
+**Result / Recommendation: Erekle ran `read_ipc2581_metadata` on the
+experiment-6 export of one private four-layer board. It returned exporter
+version `KiCad 10.0.8` and four copper layers in top-first order without
+raising, and Erekle confirmed that the copper thicknesses and the dielectric
+gaps derived from the printed centres match Board Setup. His local full suite
+gave 441 passed in 32.98 s. Erekle approved three conventions: Z = 0 at the
+outer face of the first copper layer, IPC Y reversed once in the stored XY
+frame, and `CONDUCTOR` as the only copper layer function for now.
+Recommendation: the next increment is nets plus filled-zone contours only.**
+
+Both runs were made by Erekle in his `.venv` (Python 3.14); the assistant saw
+only the pasted output and did not open the board or its export. The board's
+values are not recorded here because the board is private. The pasted suite
+summary shows no skips, against 437 passed and 4 skipped in the assistant's
+workspace, where KiCad CLI, StickHub and the private boards are absent.
+
+Limits of this evidence: one board and one exporter version. Its stack is
+symmetric, so it cannot reveal a mirrored Z computation; that case is covered
+only by the synthetic asymmetric fixture. It has no dielectric sublayers.
+Other copper layer functions (`SIGNAL`, `PLANE`, `MIXED`, `CONDFOIL`,
+`CONDFILM`) still raise; supporting them is deferred to other CAD exporters.
+
+GitHub shows PR #11 merged into `main` at
+`33439adb557a70efe250e1f6584c900c4d3c61b4`, with the same tree as the reader
+commit `843aa5b`. This assistant merged nothing and did not verify the CI
+result for that commit. No code or test changed in this documentation-only
+entry.
+main
+
 ## 2026-11-16 — Phase 2 small task: IPC-2581 nets and filled-zone contours
 
 **Result / Recommendation: `pdnlab_dc.ipc2581_fills` returns `Net` records and
@@ -1712,33 +1743,43 @@ extra entity hardening.
 Stopped here as instructed: no tracks, pads, drills, cleanup, meshing, setup
 files, CLI or real-board solve. No dependency or private board data changed.
 
-## 2026-11-16 — Metadata reader on one real KiCad 10 export; conventions approved
+## 2026-11-16 — Fills reader on one real KiCad 10 export; increment closed
 
-**Result / Recommendation: Erekle ran `read_ipc2581_metadata` on the
-experiment-6 export of one private four-layer board. It returned exporter
-version `KiCad 10.0.8` and four copper layers in top-first order without
-raising, and Erekle confirmed that the copper thicknesses and the dielectric
-gaps derived from the printed centres match Board Setup. His local full suite
-gave 441 passed in 32.98 s. Erekle approved three conventions: Z = 0 at the
-outer face of the first copper layer, IPC Y reversed once in the stored XY
-frame, and `CONDUCTOR` as the only copper layer function for now.
-Recommendation: the next increment is nets plus filled-zone contours only.**
+**Result / Recommendation: `read_ipc2581_fills` read the experiment-6 export of
+Erekle's private test board without raising: 141 nets, 11 fills, 183 holes. The
+fill count matches experiment 6, which matched 11 saved fill polygons. Every
+hole came from splitting KiCad's slits, so this is the first real-file evidence
+for the approved slit handling. The nets and filled-zone increment is closed.
+Recommendation: start the tracks increment; arc direction still needs a real
+export that has an arc on copper.**
 
-Both runs were made by Erekle in his `.venv` (Python 3.14); the assistant saw
-only the pasted output and did not open the board or its export. The board's
-values are not recorded here because the board is private. The pasted suite
-summary shows no skips, against 437 passed and 4 skipped in the assistant's
-workspace, where KiCad CLI, StickHub and the private boards are absent.
+Run by Erekle on his machine, `main` at `c19a870` (PR #13 merged), with the
+project `.venv`; output pasted into the session. Counts and layer names are
+logged with his permission; net names and stack values are not.
 
-Limits of this evidence: one board and one exporter version. Its stack is
-symmetric, so it cannot reveal a mirrored Z computation; that case is covered
-only by the synthetic asymmetric fixture. It has no dielectric sublayers.
-Other copper layer functions (`SIGNAL`, `PLANE`, `MIXED`, `CONDFOIL`,
-`CONDFILM`) still raise; supporting them is deferred to other CAD exporters.
+```sh
+.venv/bin/python -c "from pdnlab_dc.ipc2581_fills import read_ipc2581_fills as r; x=r('tests/test boards/test brd 1/_exp06/board.xml'); print(len(x.nets),len(x.fills),sum(len(f.geometry.interiors) for f in x.fills)); print(sorted({(u.kind,u.layer_id) for u in x.unread})); print(x.uninspected_layers)"
+```
 
-GitHub shows PR #11 merged into `main` at
-`33439adb557a70efe250e1f6584c900c4d3c61b4`, with the same tree as the reader
-commit `843aa5b`. This assistant merged nothing and did not verify the CI
-result for that commit. No code or test changed in this documentation-only
-entry.
-main
+- Output line 1: `141 11 183` (nets, fills, holes).
+- Unread kinds by layer: pads on F.Cu, In1.Cu, In2.Cu and B.Cu; via pads on
+  all four; track or graphic segments on F.Cu, In2.Cu and B.Cu. No arcs on
+  copper, and no copper text, graphics, teardrops or footprint-owned zones
+  (any of these would have raised).
+- Uninspected layers: F.Mask, B.Mask, F.Silkscreen, B.Silkscreen, F.Paste,
+  B.Paste, User.Eco2, Edge.Cuts, B.Courtyard, F.Courtyard, B.Fab, F.Fab and
+  the drill layer F.Cu_B.Cu.
+
+Erekle's earlier grep found 10 `<Arc ` elements in this export and no
+`geometryUsage="TEARDROP"`. Since the reader counted no arc on any copper layer,
+those arcs are on non-copper layers. So this board cannot check the arc
+direction convention for the tracks increment; a small public KiCad 10 board
+with one arc track is needed for that.
+
+State of the merges: PR #12 merged at `85f2b6c`; PR #13 merged at `c19a870`.
+CI passed for PR #13 (run 43809395145) and on `main` after the merge (run
+43809508904). Resolving the PR #13 conflict put the PR #12 entry after the fills
+entry; this change moves it back to date order without changing its text.
+
+Not checked: fill geometry against KiCad beyond the count (experiment 6 already
+matched vertex cycles); holes against the board file; anything in a solve.
