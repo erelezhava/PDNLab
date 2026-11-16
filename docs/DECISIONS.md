@@ -1576,3 +1576,33 @@ Limitations and open points:
 Stopped here as instructed: no tracks, pads, zones, drills, nets, cleanup,
 meshing, setup files, CLI or real-board solve. No dependency or private board
 data changed. Changes are uncommitted; nothing was staged, pushed or merged.
+
+## 2026-11-16 — Metadata reader on one real KiCad 10 export; conventions approved
+
+**Result / Recommendation: Erekle ran `read_ipc2581_metadata` on the
+experiment-6 export of one private four-layer board. It returned exporter
+version `KiCad 10.0.8` and four copper layers in top-first order without
+raising, and Erekle confirmed that the copper thicknesses and the dielectric
+gaps derived from the printed centres match Board Setup. His local full suite
+gave 441 passed in 32.98 s. Erekle approved three conventions: Z = 0 at the
+outer face of the first copper layer, IPC Y reversed once in the stored XY
+frame, and `CONDUCTOR` as the only copper layer function for now.
+Recommendation: the next increment is nets plus filled-zone contours only.**
+
+Both runs were made by Erekle in his `.venv` (Python 3.14); the assistant saw
+only the pasted output and did not open the board or its export. The board's
+values are not recorded here because the board is private. The pasted suite
+summary shows no skips, against 437 passed and 4 skipped in the assistant's
+workspace, where KiCad CLI, StickHub and the private boards are absent.
+
+Limits of this evidence: one board and one exporter version. Its stack is
+symmetric, so it cannot reveal a mirrored Z computation; that case is covered
+only by the synthetic asymmetric fixture. It has no dielectric sublayers.
+Other copper layer functions (`SIGNAL`, `PLANE`, `MIXED`, `CONDFOIL`,
+`CONDFILM`) still raise; supporting them is deferred to other CAD exporters.
+
+GitHub shows PR #11 merged into `main` at
+`33439adb557a70efe250e1f6584c900c4d3c61b4`, with the same tree as the reader
+commit `843aa5b`. This assistant merged nothing and did not verify the CI
+result for that commit. No code or test changed in this documentation-only
+entry.
