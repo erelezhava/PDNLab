@@ -1,4 +1,5 @@
-"""IPC-2581 nets and zone-fill reader: hand-written XML only, no real or private boards.
+"""IPC-2581 copper reader (nets, zone fills, tracks): hand-written XML only, no real or
+private boards.
 
 The Set layout follows KiCad 10.0.8's exporter (pcbnew/pcb_io/ipc2581/pcb_io_ipc2581.cpp,
 generateLayerSetNet): per copper layer and net one Set with Features/UserSpecial holding
@@ -12,13 +13,14 @@ Coordinates are IPC (Y up); the stored frame reverses Y once and is in metres.
 
 from dataclasses import fields
 import hashlib
+import math
 
 import pytest
-from shapely.geometry import Polygon
+from shapely.geometry import Point, Polygon
 
 from pdnlab_dc.board import BoardModel
-from pdnlab_dc.ipc2581_fills import (SCOPE, Ipc2581ZoneFills, UnreadCount,
-                                     parse_ipc2581_fills, read_ipc2581_fills)
+from pdnlab_dc.ipc2581_copper import (SCOPE, Ipc2581Copper, UnreadCount,
+                                     parse_ipc2581_copper, read_ipc2581_copper)
 from pdnlab_dc.ipc2581_metadata import NAMESPACE, XY_TRANSFORM, parse_ipc2581_metadata
 
 LAYERS = ('<Layer name="F.Mask" layerFunction="SOLDERMASK"/>'
@@ -109,7 +111,7 @@ def by_id(result):
 
 
 def test_fill_coordinates_are_reversed_in_y_once_and_scaled_to_metres_once():
-    fill = by_id(parse_ipc2581_fills(export()))["fill:F.Cu:0"]
+    fill = by_id(parse_ipc2581_copper(export()))["fill:F.Cu:0"]
     assert (fill.net_id, fill.layer_id, fill.kind) == ("PWR", "F.Cu", "fill")
     # Every vertex: x = mm/1000, y = -mm/1000. A missing or doubled reversal gives negative y.
     coords = [v for point in fill.geometry.exterior.coords for v in point]
@@ -123,7 +125,7 @@ def test_fill_coordinates_are_reversed_in_y_once_and_scaled_to_metres_once():
 
 
 def test_explicit_cutout_is_kept_as_a_hole():
-    fill = by_id(parse_ipc2581_fills(export()))["fill:B.Cu:0"]
+    fill = by_id(parse_ipc2581_copper(export()))["fill:B.Cu:0"]
     assert fill.net_id == "GND" and len(fill.geometry.interiors) == 1
     assert fill.geometry.area == pytest.approx(196e-6, rel=1e-12)
     assert {tuple(round(v, 12) for v in p) for p in fill.geometry.interiors[0].coords} == \
@@ -133,7 +135,7 @@ def test_explicit_cutout_is_kept_as_a_hole():
 def test_kicad_fractured_fill_is_split_into_outline_and_hole_without_moving_vertices():
     raw = Polygon([(x, y) for x, y in FRACTURED])
     assert not raw.is_valid  # why the slit form needs handling: Shapely rejects it as given
-    fill = by_id(parse_ipc2581_fills(export()))["fill:B.Cu:1"]
+    fill = by_id(parse_ipc2581_copper(export()))["fill:B.Cu:1"]
     assert len(fill.geometry.interiors) == 1 and fill.geometry.is_valid
     assert fill.geometry.area == pytest.approx(96e-6, rel=1e-12) == raw.area * 1e-6
     assert {tuple(round(v, 12) for v in p) for p in fill.geometry.interiors[0].coords} == FRACTURED_HOLE_M
@@ -147,14 +149,14 @@ def test_two_slits_in_a_chain_and_a_ring_starting_inside_a_hole():
             (20, -5), (12, -5), (12, -6), (10, -6), (10, -4), (0, -4), (0, -10), (30, -10), (30, 0)]
     for start in (0, 6):
         rotated = ring[start:] + ring[:start]
-        fill = parse_ipc2581_fills(export(b_cu=f'<Set net="GND">{special(contour(rotated))}</Set>')).fills[-1]
+        fill = parse_ipc2581_copper(export(b_cu=f'<Set net="GND">{special(contour(rotated))}</Set>')).fills[-1]
         assert len(fill.geometry.interiors) == 2
         assert fill.geometry.area == pytest.approx((300 - 4 - 2) * 1e-6, rel=1e-12)
         assert fill.geometry.bounds == pytest.approx((0, 0, 0.030, 0.010), abs=1e-15)
 
 
 def test_nets_come_from_every_set_and_unassigned_copper_has_no_net():
-    result = parse_ipc2581_fills(export())
+    result = parse_ipc2581_copper(export())
     # SIG appears only on the drill layer; no net is invented for the unassigned fill.
     assert [(n.id, n.name) for n in result.nets] == [("GND", "GND"), ("PWR", "PWR"), ("SIG", "SIG")]
     assert [(f.id, f.layer_id, f.net_id) for f in result.fills] == [
@@ -163,7 +165,7 @@ def test_nets_come_from_every_set_and_unassigned_copper_has_no_net():
 
 
 def test_feature_ids_and_source_references_are_stable_and_traceable():
-    first, second = (parse_ipc2581_fills(export()) for _ in range(2))
+    first, second = (parse_ipc2581_copper(export()) for _ in range(2))
     assert [(f.id, f.source_ref) for f in first.fills] == [(f.id, f.source_ref) for f in second.fills]
     assert [f.source_ref for f in first.fills] == [
         "LayerFeature[@layerRef='F.Cu']/Set[1]/Features[1]/UserSpecial[1]/Contour[1]",
@@ -173,13 +175,10 @@ def test_feature_ids_and_source_references_are_stable_and_traceable():
 
 
 def test_unread_copper_is_counted_not_read_and_other_layers_are_listed():
-    result = parse_ipc2581_fills(export())
+    result = parse_ipc2581_copper(export())
     assert result.unread == (
         UnreadCount("pad", "F.Cu", "PWR", 1),
-        UnreadCount("track or graphic arc", "F.Cu", "PWR", 1),
-        UnreadCount("track or graphic segment", "F.Cu", "PWR", 1),
         UnreadCount("via pad", "F.Cu", "PWR", 1),
-        UnreadCount("track or graphic segment", "B.Cu", "PWR", 1),
         UnreadCount("via pad", "B.Cu", "PWR", 1))
     assert result.uninspected_layers == ("F.Cu_B.Cu",)
     assert len(result.fills) == 4
@@ -189,17 +188,17 @@ def test_unread_copper_is_counted_not_read_and_other_layers_are_listed():
 def test_copper_no_increment_reads_raises_instead_of_being_counted(extra, message):
     # Appended after the readable Sets, so it is Set[4] on F.Cu.
     with pytest.raises(ValueError, match=message) as error:
-        parse_ipc2581_fills(export(f_cu=F_CU + extra))
+        parse_ipc2581_copper(export(f_cu=F_CU + extra))
     assert "layer 'F.Cu'" in str(error.value) and "Set[4]" in str(error.value)
 
 
 def test_result_is_scoped_and_not_a_board_model():
     data = export()
-    result = parse_ipc2581_fills(data)
+    result = parse_ipc2581_copper(data)
     meta = parse_ipc2581_metadata(data)
-    assert isinstance(result, Ipc2581ZoneFills) and not isinstance(result, BoardModel)
-    assert {f.name for f in fields(result)} == {"source", "copper_layers", "nets", "fills", "unread",
-                                                "uninspected_layers", "scope"}
+    assert isinstance(result, Ipc2581Copper) and not isinstance(result, BoardModel)
+    assert {f.name for f in fields(result)} == {"source", "copper_layers", "nets", "fills", "tracks",
+                                                "unread", "uninspected_layers", "scope"}
     assert result.scope == SCOPE and "not read" in SCOPE and "not a complete board" in SCOPE
     assert result.source.assumptions[0] == SCOPE
     assert any("applied once" in a for a in result.source.assumptions)
@@ -212,17 +211,17 @@ def test_result_is_scoped_and_not_a_board_model():
 
 
 def test_copper_layer_without_features_and_board_without_fills():
-    result = parse_ipc2581_fills(export(f_cu=f'<Set net="PWR">{PIN_PAD}</Set>', b_cu=""))
+    result = parse_ipc2581_copper(export(f_cu=f'<Set net="PWR">{PIN_PAD}</Set>', b_cu=""))
     assert result.fills == () and [n.id for n in result.nets] == ["PWR", "SIG"]
     step = '<Step name="board"></Step>'
-    result = parse_ipc2581_fills(export(step=step))
+    result = parse_ipc2581_copper(export(step=step))
     assert (result.nets, result.fills, result.unread, result.uninspected_layers) == ((), (), (), ())
 
 
 def test_read_from_path_hashes_the_bytes_parsed(tmp_path):
     path = tmp_path / "board.xml"
     path.write_bytes(export())
-    assert read_ipc2581_fills(path) == parse_ipc2581_fills(export())
+    assert read_ipc2581_copper(path) == parse_ipc2581_copper(export())
 
 
 def fill_on_f_cu(content):
@@ -303,7 +302,7 @@ CROSSING = [(0, 0), (4, 0), (4, -4), (0, -4), (4, 0), (0, 0), (0, -4), (4, -4)]
 ])
 def test_unsupported_content_raises_with_context(data, message):
     with pytest.raises(ValueError, match=message):
-        parse_ipc2581_fills(data)
+        parse_ipc2581_copper(data)
 
 
 @pytest.mark.parametrize("content,net", [
@@ -312,21 +311,123 @@ def test_unsupported_content_raises_with_context(data, message):
 ])
 def test_errors_name_layer_net_and_element(content, net):
     with pytest.raises(ValueError) as error:
-        parse_ipc2581_fills(export(f_cu=content))
+        parse_ipc2581_copper(export(f_cu=content))
     assert "layer 'F.Cu'" in str(error.value) and net in str(error.value)
     assert "LayerFeature[@layerRef='F.Cu']/Set[1]/Features[1]" in str(error.value)
 
 
-def test_unread_content_is_not_validated_but_is_counted():
-    # The track increment will validate Lines; here an odd Line is only counted.
-    odd = '<Line startX="0" startY="0" endX="1" endY="0"><LineDesc lineWidth="0.5" lineEnd="SQUARE"/></Line>'
-    result = parse_ipc2581_fills(fill_on_f_cu(special(odd, odd)))
-    assert UnreadCount("track or graphic segment", "F.Cu", "PWR", 2) in result.unread
+def test_unread_pads_are_counted_not_validated():
+    # The pad increment will validate Pads; here an odd Pad is only counted.
+    odd = '<Pad padstackDefRef="?"><Xform rotation="45"/></Pad>'
+    result = parse_ipc2581_copper(export(f_cu=f'<Set net="PWR">{odd}{odd}</Set>'))
+    assert UnreadCount("pad", "F.Cu", "PWR", 2) in result.unread
 
 
 def test_footprint_set_without_copper_is_accepted_and_nothing_counted():
-    result = parse_ipc2581_fills(export(f_cu='<Set componentRef="U1"><Features><Location x="0" y="0"/>'
+    result = parse_ipc2581_copper(export(f_cu='<Set componentRef="U1"><Features><Location x="0" y="0"/>'
                                              '<UserSpecial/></Features></Set>'))
     assert not [u for u in result.unread if u.layer_id == "F.Cu"]
     with pytest.raises(ValueError, match="component Set content"):
-        parse_ipc2581_fills(export(f_cu=f'<Set componentRef="U1">{PIN_PAD}</Set>'))
+        parse_ipc2581_copper(export(f_cu=f'<Set componentRef="U1">{PIN_PAD}</Set>'))
+
+
+# ---- Tracks -------------------------------------------------------------------------------
+# Asymmetric straight segment and a counter-clockwise quarter arc, far from the origin (IPC mm).
+def line(x0, y0, x1, y1, width="0.4", end="ROUND"):
+    return (f'<Line startX="{x0}" startY="{y0}" endX="{x1}" endY="{y1}">'
+            f'<LineDesc lineWidth="{width}" lineEnd="{end}"/></Line>')
+
+
+def arc(x0, y0, x1, y1, cx, cy, clockwise="false", width="0.4"):
+    return (f'<Arc startX="{x0}" startY="{y0}" endX="{x1}" endY="{y1}" centerX="{cx}" '
+            f'centerY="{cy}" clockwise="{clockwise}"><LineDesc lineWidth="{width}" lineEnd="ROUND"/></Arc>')
+
+
+SEGMENT = line(12, -3, 18, -5)
+QUARTER = arc(33, -10, 30, -7, 30, -10)   # IPC: from angle 0 to 90 degrees, counter-clockwise
+
+
+def tracks_of(content, net='net="PWR"'):
+    return parse_ipc2581_copper(export(f_cu=f"<Set {net}>{special(content)}</Set>", b_cu="")).tracks
+
+
+def test_track_vertices_are_the_outline_transformed_exactly_once():
+    from pdnlab_dc.track_outline import segment_outline
+    track, = tracks_of(SEGMENT)
+    in_mm = segment_outline((12.0, -3.0), (18.0, -5.0), 0.4, 1e-3)
+    expected = [(x * 1e-3, -y * 1e-3) for x, y in in_mm.exterior.coords]
+    assert [v for p in track.geometry.exterior.coords for v in p] == \
+        pytest.approx([v for p in expected for v in p], abs=1e-15)
+
+
+def test_segment_track_in_metres_with_y_reversed_once():
+    from shapely.geometry import LineString
+    track, = tracks_of(SEGMENT)
+    assert (track.id, track.net_id, track.layer_id, track.kind) == ("track:F.Cu:0", "PWR", "F.Cu", "track")
+    centre_line = LineString([(0.012, 0.003), (0.018, 0.005)])   # KiCad Y down, in metres
+    for p in track.geometry.exterior.coords:
+        assert centre_line.distance(Point(p)) == pytest.approx(0.0002, abs=1e-12)
+    length = math.hypot(0.006, 0.002)
+    assert track.geometry.area == pytest.approx(length * 0.0004 + math.pi * 0.0002 ** 2, rel=1e-3)
+
+
+def test_arc_track_follows_the_direction_flag_in_ipc_coordinates():
+    track, = tracks_of(QUARTER)
+    # IPC 45 degrees on the arc -> metres with Y reversed; the long way round is not covered.
+    on_arc = (0.030 + 0.003 * math.cos(math.pi / 4), 0.010 - 0.003 * math.sin(math.pi / 4))
+    other_way = (0.030 - 0.003 * math.cos(math.pi / 4), 0.010 + 0.003 * math.sin(math.pi / 4))
+    assert track.geometry.contains(Point(on_arc)) and not track.geometry.intersects(Point(other_way))
+    for p in track.geometry.exterior.coords:   # all copper within the band around radius 3 mm
+        assert 0.0028 - 1e-12 <= math.dist(p, (0.030, 0.010)) <= 0.0032 + 1e-12 or \
+            min(math.dist(p, (0.033, 0.010)), math.dist(p, (0.030, 0.007))) == pytest.approx(0.0002)
+    exact = math.pi / 2 * 0.003 * 0.0004 + math.pi * 0.0002 ** 2
+    assert track.geometry.area == pytest.approx(exact, rel=1e-3) and track.geometry.area < exact
+    flipped, = tracks_of(QUARTER.replace('clockwise="false"', 'clockwise="true"'))
+    assert flipped.geometry.contains(Point(other_way)) and not flipped.geometry.intersects(Point(on_arc))
+
+
+def test_tracks_ids_paths_nets_and_unassigned_copper():
+    result = parse_ipc2581_copper(export())
+    assert [(t.id, t.net_id, t.source_ref) for t in result.tracks] == [
+        ("track:F.Cu:0", "PWR", "LayerFeature[@layerRef='F.Cu']/Set[1]/Features[1]/UserSpecial[1]/Line[1]"),
+        ("track:F.Cu:1", "PWR", "LayerFeature[@layerRef='F.Cu']/Set[1]/Features[1]/UserSpecial[1]/Arc[1]"),
+        ("track:B.Cu:0", "PWR", "LayerFeature[@layerRef='B.Cu']/Set[2]/Features[1]/UserSpecial[1]/Line[1]")]
+    track, = tracks_of(SEGMENT, net="")
+    assert track.net_id is None
+    # Fills keep their own numbering beside tracks.
+    assert [f.id for f in result.fills] == ["fill:F.Cu:0", "fill:F.Cu:1", "fill:B.Cu:0", "fill:B.Cu:1"]
+
+
+def test_width_comes_from_the_line_desc():
+    narrow, = tracks_of(line(12, -3, 18, -5, width="0.2"))
+    wide, = tracks_of(line(12, -3, 18, -5, width="0.8"))
+    assert wide.geometry.area / narrow.geometry.area == pytest.approx(
+        (6.3246 * 0.8 + math.pi * 0.16) / (6.3246 * 0.2 + math.pi * 0.01), rel=1e-3)
+
+
+@pytest.mark.parametrize("content,message", [
+    (SEGMENT.replace('<LineDesc lineWidth="0.4" lineEnd="ROUND"/>', '<LineDescRef id="L1"/>'),
+     "exactly one inline LineDesc"),
+    (SEGMENT.replace('<LineDesc lineWidth="0.4" lineEnd="ROUND"/>', ''), "exactly one inline LineDesc"),
+    (SEGMENT.replace('/></Line>', '/><LineDesc lineWidth="0.4" lineEnd="ROUND"/></Line>'),
+     "exactly one inline LineDesc"),
+    (line(12, -3, 18, -5, end="SQUARE"), "lineEnd 'SQUARE'.*only ROUND"),
+    (SEGMENT.replace('lineEnd="ROUND"', 'lineEnd="ROUND" lineProperty="DASHED"'), "exactly lineWidth and lineEnd"),
+    (SEGMENT.replace("<Line ", '<Line id="t1" '), "attributes must be exactly"),
+    (line(12, -3, 18, -5, width="0"), "width 0.0 must be positive"),
+    (line(12, -3, 18, -5, width="wide"), "not a decimal"),
+    (QUARTER.replace(' clockwise="false"', ''), "attributes must be exactly"),
+    (QUARTER.replace('clockwise="false"', 'clockwise="yes"'), "clockwise must be 'true' or 'false'"),
+    (arc(33, -10, 30, -6.995, 30, -10), "not equidistant"),
+    (arc(30.1, -10, 30, -9.9, 30, -10), "fold over"),
+    (arc(33, -10, 33, -10, 30, -10), "coincide"),
+])
+def test_unsupported_tracks_raise_with_context(content, message):
+    with pytest.raises(ValueError, match=message) as error:
+        tracks_of(content)
+    assert "layer 'F.Cu'" in str(error.value) and "net 'PWR'" in str(error.value)
+
+
+def test_track_under_a_nonzero_location_raises():
+    with pytest.raises(ValueError, match="contour or track under a nonzero Location"):
+        parse_ipc2581_copper(export(f_cu=f'<Set net="PWR">{special(SEGMENT, location=(1, 0))}</Set>'))

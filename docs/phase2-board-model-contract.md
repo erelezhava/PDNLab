@@ -131,19 +131,22 @@ a real KiCad 10 export, dielectric sublayers and other exporters are untested.
 
 ## Nets and filled-zone contour reader (2026-11-16)
 
-`pdnlab_dc.ipc2581_fills` is the second XML increment. It reuses
-`parse_ipc2581_tree` from the metadata reader (one parse; header, units, layers
-and provenance checked there only) and returns `Ipc2581ZoneFills`: `source`,
-`copper_layers`, `nets`, `fills`, `unread`, `uninspected_layers` and `scope`.
-It is not a `BoardModel` and is not a complete board.
+Renamed with the track increment: the module is now `pdnlab_dc.ipc2581_copper`,
+the functions `parse_ipc2581_copper`/`read_ipc2581_copper` and the result
+`Ipc2581Copper`, which also has `tracks` (next section). Fill behaviour is
+unchanged. It reuses `parse_ipc2581_tree` from the metadata reader (one parse;
+header, units, layers and provenance checked there only). The result holds
+`source`, `copper_layers`, `nets`, `fills`, `tracks`, `unread`,
+`uninspected_layers` and `scope`. It is not a `BoardModel` and is not a
+complete board.
 
 ```python
-from pdnlab_dc.ipc2581_fills import read_ipc2581_fills
+from pdnlab_dc.ipc2581_copper import read_ipc2581_copper
 
-fills = read_ipc2581_fills("board.xml")
-[(f.id, f.net_id, f.layer_id, f.geometry.area) for f in fills.fills]
-fills.unread              # counts of tracks, pads and vias, not read yet
-fills.uninspected_layers  # drill, slot, mask, ... LayerFeatures not looked at
+copper = read_ipc2581_copper("board.xml")
+[(f.id, f.net_id, f.layer_id, f.geometry.area) for f in copper.fills]
+copper.unread              # counts of pads and via pads, not read yet
+copper.uninspected_layers  # drill, slot, mask, ... LayerFeatures not looked at
 ```
 
 What KiCad 10.0.8 writes, from its exporter source (`pcb_io_ipc2581.cpp` at tag
@@ -153,7 +156,7 @@ What KiCad 10.0.8 writes, from its exporter source (`pcb_io_ipc2581.cpp` at tag
 | --- | --- | --- |
 | Where nets are listed | Only as `Set@net`. `generateLogicalNets` exists but is not called; no `PhyNet`/`PhyNetGroup`. `net` is omitted for net code 0. Names pass through `genString`: `:` becomes `_`, and `_N` is appended on a clash with another generated name. | Nets are the distinct `Set@net` values in the Step, with exported names. A copper `Set` without `net` is unassigned, `net_id=None`. `LogicalNet`/`PhyNet`/`PhyNetGroup` raise. |
 | Which copper `Contour`s are zone fills | Board zones: `Contour` in the net's `Set/Features/UserSpecial`. Also `Contour`s in teardrop sets (`geometryUsage="TEARDROP"`), copper text (`"TEXT"`) and footprint-owned zones (`Set@componentRef`, no `net`). Board graphic polygons/rectangles/circles are `UserPrimitiveRef`s to the user dictionary. | Only the first kind is read as `fill`. Teardrops, copper text, footprint graphics and `UserPrimitiveRef` shapes raise, with or without a net. A footprint-owned zone with a `Contour` raises because its net is not exported. |
-| Mixed sets | One net `Set` per layer holds fills, track `Line`/`Arc` and via `Pad`s (`padUsage="VIA"`); pin pads go in a second `Set`. Board graphic segments/arcs share the `UserSpecial` with tracks and are indistinguishable from them. | `Line`, `Arc`, `Pad` (pin or via) are counted by kind, layer and net in `unread`, not read or validated; the track and pad increments read them. |
+| Mixed sets | One net `Set` per layer holds fills, track `Line`/`Arc` and via `Pad`s (`padUsage="VIA"`); pin pads go in a second `Set`. Board graphic segments/arcs share the `UserSpecial` with tracks and are indistinguishable from them. | `Line` and `Arc` are read as tracks (next section). `Pad` (pin or via) is counted by kind, layer and net in `unread`, not read or validated; the pad increment reads it. |
 | Fill topology | The zone filler calls `Fracture()`: each fill is one outline that reaches every hole along a zero-width slit (an edge and, later, the same edge reversed). Shapely rejects such a ring as self-intersecting. | Each reversed edge pair is removed, splitting the ring into one outline and its holes. This is the criterion of KiCad's own `unfractureSingle`. No vertex is moved; area is unchanged. Explicit `Cutout`s are kept as holes. |
 
 Supported fill geometry, anything else raising with layer, net and element path:
@@ -182,3 +185,37 @@ zones to board level. Teardrops raise under the same rule (none in the
 experiment-6 export). Erekle approved the slit handling on 2026-11-16.
 Synthetic XML only (`tests/test_ipc2581_fills.py`); no real export has been
 read by this module.
+
+## Track reader (2026-11-16)
+
+Every `Line` and `Arc` in a copper layer's `Set/Features/UserSpecial` becomes one
+`CopperFeature` of kind `track` in `Ipc2581Copper.tracks`: ID `track:<layer>:<k>`
+(`k` counts tracks on that layer in document order), `source_ref` the element
+path, net from the enclosing `Set` (`None` if absent). Copper graphic segments
+and arcs are written the same way by KiCad and are read as tracks too.
+
+KiCad 10.0.8 writes a track segment as
+`<Line startX startY endX endY><LineDesc lineWidth lineEnd="ROUND"/></Line>` and
+an arc as `<Arc startX startY endX endY centerX centerY clockwise>` with the same
+inline `LineDesc`. On the public arc board the `clockwise` flag is in IPC (Y-up)
+coordinates, and the centre is rounded to 5 decimals, so start and end radii can
+differ by a few nanometres.
+
+Accepted, anything else raising with layer, net and element path: exactly those
+attributes; exactly one inline `LineDesc` with exactly `lineWidth` and
+`lineEnd="ROUND"`; a positive decimal width; `clockwise` `true` or `false`;
+start and end radii within 1 µm of each other; arc radius larger than half the
+width; distinct arc start and end; no nonzero `Location` above it.
+
+Outlines (`pdnlab_dc.track_outline`, unit-free) are built in source millimetres
+and every vertex is transformed once to metres. A segment is a rectangle plus two
+half-circle caps; a zero-length segment is a circle. An arc is four true circles:
+outer edge (R + w/2) and inner edge (R - w/2) around the centre, R the mean of
+the start and end radii, and caps of radius w/2 centred exactly on the exported
+start and end. Every vertex lies on its true circle; each piece gets the fewest
+equal steps that keep every chord within 1 µm of the circle. Chords cut copper
+on convex pieces and add up to 1 µm of copper on an arc's inner edge; the total
+area is always slightly below exact (Erekle's choice, 2026-11-16).
+
+Not unioned with fills, pads or each other: overlaps and the joints between
+segments remain for the cleanup increment.

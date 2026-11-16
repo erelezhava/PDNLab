@@ -25,7 +25,7 @@ from pdnlab_dc.board import CopperLayer, SourceInfo
 NAMESPACE = "http://webstds.ipc.org/2581"
 # Source XY (mm) -> stored SI XY (m), in SourceInfo order (a, b, tx, c, d, ty).
 XY_TRANSFORM = (1e-3, 0.0, 0.0, 0.0, -1e-3, 0.0)
-# Conventions shared with readers that build on this one (ipc2581_fills).
+# Conventions shared with readers that build on this one (ipc2581_copper).
 CONVENTIONS = (
     "Z is zero at the outer face of the first copper layer in stackup sequence and increases "
     "with sequence; z_m is each copper centre.",

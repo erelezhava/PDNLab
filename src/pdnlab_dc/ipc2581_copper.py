@@ -1,4 +1,4 @@
-"""IPC-2581 nets and filled-zone contours only. This is not a board importer.
+"""IPC-2581 nets, filled-zone contours and tracks. This is not yet a board importer.
 
 Builds on ipc2581_metadata (header, units, stackup, provenance) and adds:
 * Net records: every distinct Set ``net`` attribute in the Step. KiCad 10 writes no
@@ -6,16 +6,23 @@ Builds on ipc2581_metadata (header, units, stackup, provenance) and adds:
   ``net_id=None``. Net names are the exported names, which KiCad may have altered.
 * CopperFeature records of kind "fill": each Contour written directly in a copper
   layer's Set/Features/UserSpecial, one feature per Contour, holes preserved.
+* CopperFeature records of kind "track": each Line (straight segment) and Arc in
+  the same UserSpecial, one feature per element, outlined by ``track_outline`` with
+  round ends at a 1 µm chord error. KiCad writes copper graphic segments and arcs the
+  same way, so they are read as tracks too.
 
 Copper that later increments will read is counted in ``unread``, by kind, layer and
-net, without reading or checking its geometry: track segments and arcs (a graphic
-segment or arc on copper is indistinguishable from a track and will be read with them),
-pads and via pads. Copper that no planned increment reads raises instead, so copper on
+net, without reading or checking its geometry: pads and via pads. Copper that no planned increment reads raises instead, so copper on
 a net is never left out of a result: teardrops, copper text, footprint graphics and
 board graphic shapes on copper. A footprint-owned zone raises, because the export drops
 its net. LayerFeatures of other layers (drills, slots, mask, paste, legend) are listed
 in ``uninspected_layers``. Anything else raises ValueError with layer, net and
 element-path context; nothing is skipped silently.
+
+Tracks: width from one inline LineDesc with lineEnd ROUND; an Arc's clockwise flag
+is in IPC (Y-up) coordinates and its centre may differ from equidistance by up to
+1 µm, the rounding KiCad applies. Outlines are built in source units and every
+vertex is transformed once.
 
 Geometry rules for fills: straight steps only (PolyBegin and PolyStepSegment), closed
 rings, no Xform and no nonzero Location on any containing element. The recorded
@@ -39,25 +46,32 @@ from shapely.validation import explain_validity
 from pdnlab_dc.board import BoardModel, CopperFeature, CopperLayer, Net, SourceInfo
 from pdnlab_dc.ipc2581_metadata import (_DECIMAL, CONVENTIONS, NAMESPACE, _q,
                                         parse_ipc2581_tree)
+from pdnlab_dc.track_outline import arc_outline, segment_outline
 
-SCOPE = ("Nets and filled-zone contours on copper layers only. Tracks, pads, vias and "
+SCOPE = ("Nets, filled-zone contours and tracks on copper layers only. Pads, vias and "
          "drills were not read: see unread and uninspected_layers. This is not a complete "
          "board.")
 ASSUMPTIONS = (
     SCOPE,
     "xy_transform (source mm to stored m, IPC Y reversed once) was applied once, to fill "
-    "coordinates only.",
+    "and track coordinates.",
     "Nets are the distinct Set net attributes in the Step, with their exported names; copper "
     "in a Set without one is unassigned (net_id None).",
     "A fill outline that returns along its own edge (KiCad's fractured form) was split at each "
     "such edge pair into an outline and holes; no other geometry change was made.",
+    "Tracks and copper graphic segments/arcs are outlines with round ends; every vertex lies "
+    "on its true circle or edge, within 1 µm chord error (inner arc edges may add up to 1 µm "
+    "of copper; the total area is slightly less than exact).",
 ) + CONVENTIONS
 
 # Set geometryUsage values: copper no planned increment reads, so they raise.
 _USAGE_KINDS = {"TEXT": "copper text", "GRAPHIC": "footprint graphic on copper",
                 "TEARDROP": "teardrop"}
 _SET_ATTRIBUTES = {"net", "padUsage", "geometryUsage", "componentRef"}
-_UNREAD_SPECIAL = {"Line": "track or graphic segment", "Arc": "track or graphic arc"}
+# Tracks: chord error and centre-equidistance tolerance, in metres.
+TRACK_TOL_M = 1e-6
+_LINE_ATTRIBUTES = {"startX", "startY", "endX", "endY"}
+_ARC_ATTRIBUTES = _LINE_ATTRIBUTES | {"centerX", "centerY", "clockwise"}
 
 
 @dataclass(frozen=True)
@@ -70,12 +84,13 @@ class UnreadCount:
 
 
 @dataclass(frozen=True)
-class Ipc2581ZoneFills:
+class Ipc2581Copper:
     """Nets and zone fills only. Not a BoardModel: see scope, unread, uninspected_layers."""
     source: SourceInfo
     copper_layers: tuple[CopperLayer, ...]
     nets: tuple[Net, ...]
     fills: tuple[CopperFeature, ...]
+    tracks: tuple[CopperFeature, ...]
     unread: tuple[UnreadCount, ...]
     uninspected_layers: tuple[str, ...]
     scope: str = SCOPE
@@ -178,10 +193,14 @@ def _signed_area(ring):
 
 
 class _CopperLayerReader:
-    def __init__(self, layer, transform, fills, unread):
+    def __init__(self, layer, transform, fills, tracks, unread):
         self.layer, self.fills, self.unread = layer, fills, unread
         self.transform = [Decimal(repr(v)) for v in transform]
         self.index = 0
+        self.tracks, self.track_index = tracks, 0
+        self.matrix = tuple(float(v) for v in transform)
+        # The chord tolerance in source units: 1 µm divided by the source-to-metre scale.
+        self.track_tol = TRACK_TOL_M / abs(self.matrix[0])
 
     def count(self, kind, net, n=1):
         self.unread[(self.layer, kind, net)] += n
@@ -244,9 +263,9 @@ class _CopperLayerReader:
                 raise ValueError(f"{context}: board graphic shape on copper (UserPrimitiveRef "
                                  f"{child.get('id')!r}) is not supported; draw it as a zone")
             elif tag == "UserSpecial":
-                if shifted and child.find(_q("Contour")) is not None:
-                    raise ValueError(f"{context}: contour under a nonzero Location is not "
-                                     "supported")
+                if shifted and len(child):
+                    raise ValueError(f"{context}: contour or track under a nonzero Location "
+                                     "is not supported")
                 self._special(child, net, child_ref)
             else:
                 raise ValueError(f"{context}: {tag} in Features is not supported")
@@ -255,8 +274,8 @@ class _CopperLayerReader:
         for child, tag, child_ref in _children(element, ref):
             if tag == "Contour":
                 self._contour(child, net, child_ref)
-            elif tag in _UNREAD_SPECIAL:
-                self.count(_UNREAD_SPECIAL[tag], net)
+            elif tag in ("Line", "Arc"):
+                self._track(child, tag, net, child_ref)
             else:
                 raise ValueError(f"{_context(self.layer, net, ref)}: {tag} in UserSpecial is "
                                  "not supported")
@@ -286,8 +305,47 @@ class _CopperLayerReader:
                                         "fill", polygon, source_ref=ref))
         self.index += 1
 
+    def _track(self, element, tag, net, ref):
+        context = _context(self.layer, net, ref)
+        expected = _LINE_ATTRIBUTES if tag == "Line" else _ARC_ATTRIBUTES
+        if set(element.attrib) != expected:
+            raise ValueError(f"{context}: {tag} attributes must be exactly {sorted(expected)}, "
+                             f"found {sorted(element.attrib)}")
+        children = list(element)
+        if len(children) != 1 or _tag(children[0]) != "LineDesc":
+            raise ValueError(f"{context}: {tag} must hold exactly one inline LineDesc, found "
+                             f"{[_tag(c) for c in children]}")
+        desc = children[0]
+        if set(desc.attrib) != {"lineWidth", "lineEnd"} or len(desc):
+            raise ValueError(f"{context}: LineDesc must have exactly lineWidth and lineEnd")
+        if desc.get("lineEnd") != "ROUND":
+            raise ValueError(f"{context}: lineEnd {desc.get('lineEnd')!r} is not supported; "
+                             "only ROUND")
+        width = float(_number(desc.get("lineWidth"), context))
+        point = lambda x, y: (float(_number(element.get(x), context)),
+                              float(_number(element.get(y), context)))
+        start, end = point("startX", "startY"), point("endX", "endY")
+        try:
+            if tag == "Line":
+                outline = segment_outline(start, end, width, self.track_tol)
+            else:
+                flag = element.get("clockwise")
+                if flag not in ("true", "false"):
+                    raise ValueError(f"clockwise must be 'true' or 'false', found {flag!r}")
+                outline = arc_outline(start, end, point("centerX", "centerY"), flag == "true",
+                                      width, self.track_tol, self.track_tol)
+        except ValueError as error:
+            raise ValueError(f"{context}: {error}") from None
+        a, b, tx, c, d, ty = self.matrix
+        polygon = Polygon([(a*x + b*y + tx, c*x + d*y + ty) for x, y in outline.exterior.coords])
+        if not polygon.is_valid:
+            raise ValueError(f"{context}: invalid track outline: {explain_validity(polygon)}")
+        self.tracks.append(CopperFeature(f"track:{self.layer}:{self.track_index}", net,
+                                         self.layer, "track", polygon, source_ref=ref))
+        self.track_index += 1
 
-def parse_ipc2581_fills(data):
+
+def parse_ipc2581_copper(data):
     """Nets and zone-fill features from the bytes of an IPC-2581 C file (see module doc)."""
     root, meta = parse_ipc2581_tree(data)
     cad = root.find(f"{_q('Ecad')}/{_q('CadData')}")
@@ -300,7 +358,7 @@ def parse_ipc2581_fills(data):
                              "attributes only and does not read net lists")
     defined = {layer.get("name") for layer in cad.findall(_q("Layer"))}
     copper = [layer.id for layer in meta.copper_layers]
-    nets, fills, unread, seen, uninspected = set(), [], Counter(), set(), []
+    nets, fills, tracks, unread, seen, uninspected = set(), [], [], Counter(), set(), []
     for feature, tag, _ in _children(steps[0], "Step"):
         if tag != "LayerFeature":
             continue
@@ -320,7 +378,7 @@ def parse_ipc2581_fills(data):
         if layer not in copper:
             uninspected.append(layer)
             continue
-        reader = _CopperLayerReader(layer, meta.source.xy_transform, fills, unread)
+        reader = _CopperLayerReader(layer, meta.source.xy_transform, fills, tracks, unread)
         for child, child_tag, child_ref in _children(feature, ref):
             if child_tag != "Set":
                 raise ValueError(f"{child_ref}: {child_tag} in a copper LayerFeature is not "
@@ -329,15 +387,15 @@ def parse_ipc2581_fills(data):
     source = replace(meta.source, assumptions=ASSUMPTIONS)
     net_records = tuple(Net(name, name) for name in sorted(nets))
     # Reuse the model's reference checks (unique IDs, known layers and nets); not returned.
-    BoardModel(source, meta.copper_layers, net_records, tuple(fills))
+    BoardModel(source, meta.copper_layers, net_records, tuple(fills) + tuple(tracks))
     order = {layer: i for i, layer in enumerate(copper)}
     counts = tuple(UnreadCount(kind, layer, net, n) for (layer, kind, net), n in
                    sorted(unread.items(), key=lambda item: (order[item[0][0]], item[0][1],
                                                             item[0][2] or "")))
-    return Ipc2581ZoneFills(source, meta.copper_layers, net_records, tuple(fills), counts,
-                            tuple(uninspected))
+    return Ipc2581Copper(source, meta.copper_layers, net_records, tuple(fills), tuple(tracks),
+                         counts, tuple(uninspected))
 
 
-def read_ipc2581_fills(path):
+def read_ipc2581_copper(path):
     """Read one file once; the same bytes are hashed and parsed."""
-    return parse_ipc2581_fills(Path(path).read_bytes())
+    return parse_ipc2581_copper(Path(path).read_bytes())
