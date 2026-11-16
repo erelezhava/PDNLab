@@ -5,12 +5,13 @@ measured results live in [DECISIONS.md](DECISIONS.md); the full plan, gates and
 estimates in [project-plan.md](project-plan.md). Update this file after each
 increment, in the same commit or pull request.
 
-Last updated: 2026-11-16, after the nets and zone-fill reader was merged and read
-one real KiCad 10 export.
+Last updated: 2026-11-16, after the track reader (segments and arcs) was checked
+on the public arc board and one real board.
 
 ## Where we are
 
-Phase 2 (real boards). Importer steps 1 to 3 are merged; tracks are next. The solver core is accepted
+Phase 2 (real boards). Importer steps 1 to 3 are merged; step 4 (tracks) is
+implemented and awaiting merge; pads are next. The solver core is accepted
 on synthetic cases; the IPC-2581 importer is being built one element type at a
 time. Nothing yet reads a full board, meshes it and solves it outside the
 experiments.
@@ -37,9 +38,9 @@ after release 0.1.
 | --- | --- | --- |
 | 1 | Neutral board records and validation (`board.py`) | Merged, PR #10 |
 | 2 | IPC-2581 header and stackup metadata (`ipc2581_metadata.py`) | Merged, PR #11; read on one real KiCad 10 export (logged, PR #12) |
-| 3 | Nets and filled-zone contours (`ipc2581_fills.py`) | Merged, PR #13; real export read: 141 nets, 11 fills, 183 holes |
-| 4 | Tracks (segments and arcs) | Next. Decided: 1 µm chord error, vertices on the circle, one feature per track, arcs supported |
-| 5 | Pads | Planned |
+| 3 | Nets and filled-zone contours (now in `ipc2581_copper.py`) | Merged, PR #13; real export read: 141 nets, 11 fills, 183 holes |
+| 4 | Tracks, segments and arcs (`track_outline.py`, `ipc2581_copper.py`) | Branch `phase2-ipc2581-tracks`; public arc board 13/13 and real board 785/785 tracks match KiCad |
+| 5 | Pads | Next |
 | 6 | Drills and vias | Planned |
 | 7 | Assemble a full `BoardModel` from the readers | Planned |
 | 8 | Copper cleanup per net and layer (union of fills, tracks, pads) | Planned |
@@ -65,9 +66,8 @@ decided when it starts.
 
 ## Open decisions
 
-- Arc direction: needs a small public KiCad 10 board with one arc track, because
-  the real test board has no arcs on copper.
-- Pads, drills: decided when those increments start.
+- Pads, drills: decided when those increments start. Round pads and via rings
+  will use the same 1 µm rule as tracks.
 
 ## Done decisions (Phase 2)
 
@@ -78,4 +78,8 @@ decided when it starts.
 - KiCad fractured fills are split at their zero-width slits (confirmed on one
   real export: 183 holes recovered).
 - Tracks: 1 µm maximum chord error for all round geometry, vertices on the true
-  circle, one feature per segment or arc, arcs supported.
+  circle (an arc's inner edge may gain up to 1 µm; total area always slightly
+  less), one feature per segment or arc, arcs supported; arc direction confirmed
+  on the public arc board (`tests/fixtures/arc_track`).
+- One copper reader: `ipc2581_fills` renamed `ipc2581_copper`; later element
+  types extend the same walk.

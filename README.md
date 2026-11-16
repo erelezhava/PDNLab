@@ -227,15 +227,17 @@ thickness in metres. It returns `Ipc2581Metadata`, not a board: no nets,
 tracks, pads, zones or drills are read, and unsupported revisions, units or
 stackups raise. It has been tested on synthetic XML only.
 
-`pdnlab_dc.ipc2581_fills.read_ipc2581_fills(path)` adds nets and filled-zone
-contours only. It returns `Ipc2581ZoneFills`, again not a board: `Net` records
-from the export's `Set` net names, one `CopperFeature` of kind `fill` per zone
-contour in metres with its holes, counts of the tracks, pads and vias left for
-later increments, and the non-copper layers it did not inspect. Any other copper
-(teardrops, copper text and graphics, footprint-owned zones) raises, so copper on
-a net is never silently left out. KiCad's fractured fills are split back into
-outline and holes at their zero-width slits; any other unsupported or invalid
-geometry raises. It has been tested on synthetic XML only.
+`pdnlab_dc.ipc2581_copper.read_ipc2581_copper(path)` adds nets, filled-zone
+contours and tracks. It returns `Ipc2581Copper`, again not a board: `Net` records
+from the export's `Set` net names; one `CopperFeature` of kind `fill` per zone
+contour in metres with its holes; one of kind `track` per straight or arc track,
+outlined with round ends at a 1 µm chord error (`pdnlab_dc.track_outline`);
+counts of the pads and vias left for later increments; and the non-copper layers
+it did not inspect. Any other copper (teardrops, copper text and graphics,
+footprint-owned zones) raises, so copper on a net is never silently left out.
+KiCad's fractured fills are split back into outline and holes at their zero-width
+slits; any other unsupported or invalid geometry raises. Tracks are checked
+against KiCad's own board file on the public board in `tests/fixtures/arc_track`.
 
 ## Phase 0 experiments
 

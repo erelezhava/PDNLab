@@ -1783,3 +1783,83 @@ entry; this change moves it back to date order without changing its text.
 
 Not checked: fill geometry against KiCad beyond the count (experiment 6 already
 matched vertex cycles); holes against the board file; anything in a solve.
+
+## 2026-11-16 — Phase 2 small task: IPC-2581 tracks (segments and arcs)
+
+**Result / Recommendation: tracks are read. Each IPC-2581 `Line` and `Arc` on
+copper becomes a `CopperFeature` of kind `track`, outlined with round ends at a
+1 µm chord error. On the public arc board all 13 tracks (7 segments, 6 arcs)
+match KiCad's own `.kicad_pcb`, arc direction included. On Erekle's private test
+board all 785 segments match (it has no copper arcs). Cloud workspace: 104
+focused tests pass; full suite 541 passed, 4 skipped on Python 3.11.18, 3.13.18
+and 3.14.6. Recommendation: merge, then start the pad increment.**
+
+Worked step by step with Erekle, who asked for that pace. Decisions by Erekle
+(2026-11-16):
+
+- Round geometry: at most 1 µm chord error, the same rule for track caps and arc
+  edges now and for round pads and via rings later.
+- Every vertex on its true circle (choice A). Chords cut a little copper off
+  convex pieces and add up to 1 µm on an arc's inner edge, which is concave; the
+  total area is always slightly below exact. Rejected: pushing inner-edge
+  vertices outward so no copper is ever added.
+- One feature per segment or arc, no union.
+- Arcs supported, not raised.
+- An arc's start and end radii may differ by up to 1 µm (KiCad rounds the
+  centre); edges use their mean radius and the caps sit exactly on the exported
+  end points.
+- One copper reader (option A): `ipc2581_fills` is renamed `ipc2581_copper`
+  (`read_ipc2581_copper`, `Ipc2581Copper`, new field `tracks`), so the strict
+  structure checks stay in one walk. Fill behaviour is unchanged.
+
+Evidence, in the order it was gathered:
+
+1. Arc format, first +3.3V arc of `tests/fixtures/arc_track`. The `.kicad_pcb`
+   gives start, mid and end; the export gives start, end, centre and
+   `clockwise="true"`, with Y negated. Measured from the exported centre: start
+   −135.0°, KiCad's mid −157.5°, end 180°, so the flag is clockwise in IPC Y-up
+   coordinates. Radii 5.3112912, 5.311298 and 5.3113 mm: the centre is written
+   with 5 decimals, so start and end disagree by about 9 nm.
+2. That arc as an outline: 77 vertices (outer edge 21, end cap 18, inner edge 20,
+   start cap 18), valid, area 0.054% below exact. On three test arcs (that one,
+   R 5 mm over 270°, R 0.5 mm with w 0.6 mm), edge midpoints lay up to 0.97 to
+   0.99 µm inside and up to 0.96 to 0.99 µm outside the exact outline; areas
+   −0.054%, −0.021%, −0.234%.
+3. `tests/test_arc_track_fixture.py` parses the `.kicad_pcb` independently of the
+   reader and checks all 13 tracks: same nets and kinds; each KiCad arc midpoint
+   inside exactly one arc outline and the point opposite it across the circle
+   outside; every arc vertex within 1 µm of the band edge or a cap; every segment
+   vertex at exactly half the width from KiCad's centre line; areas below exact.
+   A 13 µm segment KiCad left between an arc and a pad is effectively a dot whose
+   area is ~0.5% below a true circle (an 18-step cap), so the area check allows
+   1%. All widths on this board are 0.5 mm, so width handling is checked only by
+   the synthetic tests.
+4. Erekle's private board, run on his machine with a scratch script
+   (`check_real_tracks.py`, not committed) applying the same checks, output
+   pasted: per copper layer, KiCad segments/arcs against exported tracks: F.Cu
+   480/0 and 480/0, In1.Cu 0/0 and 0/0, In2.Cu 1/0 and 1/0, B.Cu 304/0 and 304/0.
+   Nets per layer and kind equal. 785 segments checked, 0 failed; 0 arcs. Fills
+   11; unread kinds pad and via pad. He also reported the full suite passing on
+   his machine with this branch applied; the count was not pasted.
+
+Tests: `tests/test_track_outline.py` (23: step counts, inscribed vertices and
+chord error, areas, zero-length segment, both arc directions, the fixture arc,
+rejections), `tests/test_ipc2581_copper.py` (78: the 59 fill tests plus tracks
+transformed exactly once, Y reversed once, direction flag, width, IDs and paths,
+13 rejections), `tests/test_arc_track_fixture.py` (3). Deliberate one-line bugs
+each made tests fail. In `track_outline`: chord tolerance doubled (13 failed),
+direction flag ignored (2), caps turned the wrong way (4), full width used as
+radius (4), caps coarsened (3), radius check removed (1), fold-over check
+removed (2). In the reader: Y not reversed, no transform, millimetres kept, or
+transformed twice (3 each), `clockwise` inverted (1), width halved (5),
+tolerance not converted to source units (1), `lineEnd` unchecked (1),
+`Location` check limited to contours (1). Against the arc board test alone:
+`clockwise` inverted (1 of 3), Y not reversed (3 of 3), width halved (2 of 3).
+
+Not run or not covered: arcs on a real multilayer board; real tracks of
+different widths; track reading time on a large board; KiCad 11. Overlaps
+between tracks, pads and fills are left for the cleanup increment. Copper
+graphic segments and arcs are read as tracks; a dashed or square-ended one
+raises.
+
+Stopped after tracks: no pads, drills, union, meshing, setup, CLI or solve.

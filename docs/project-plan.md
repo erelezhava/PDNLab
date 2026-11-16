@@ -328,10 +328,13 @@ result-log entry and synthetic tests; none of them yet produces a complete
 1. Neutral board records and validation (`pdnlab_dc.board`). Merged.
 2. Header and stackup metadata reader (`pdnlab_dc.ipc2581_metadata`). Merged;
    read on one real KiCad 10 export by Erekle.
-3. Nets and filled-zone contours (`pdnlab_dc.ipc2581_fills`). Implemented on
-   branch `phase2-ipc2581-zone-fills`, synthetic XML only.
-4. Planned, each separate: tracks (needs a decision on segment-to-polygon
-   approximation), pads, drills. Cleanup, meshing, setup files, CLI and
+3. Nets and filled-zone contours. Merged (PR #13); read on one real KiCad 10
+   export.
+4. Tracks, segments and arcs (`pdnlab_dc.track_outline`; the reader is renamed
+   `pdnlab_dc.ipc2581_copper`). Implemented on branch `phase2-ipc2581-tracks`;
+   checked against KiCad's board file on the public arc board and one real
+   board.
+5. Planned, each separate: pads, drills. Cleanup, meshing, setup files, CLI and
    real-board solves come after.
 
 ### Phase 0 experiments
