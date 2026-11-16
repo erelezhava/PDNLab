@@ -85,3 +85,46 @@ geometry must raise with feature/net/layer context, rather than be omitted.
 No KiCad 11 export or new numerical solve was run for these records. Current
 development-documentation support for IPC-2581 is not importer compatibility
 validation; cross-version export fixtures remain future work.
+
+## Header and stackup metadata reader (2026-11-16)
+
+`pdnlab_dc.ipc2581_metadata` is the first XML increment. It reads only the
+file header and stackup, and returns `Ipc2581Metadata(source, copper_layers)`:
+a `SourceInfo` and ordered `CopperLayer` records. It is not a `BoardModel`
+and reads no nets, tracks, pads, zones or drills; a caller cannot mistake it
+for an imported board with empty copper.
+
+```python
+from pdnlab_dc.ipc2581_metadata import read_ipc2581_metadata
+
+meta = read_ipc2581_metadata("board.xml")
+meta.source.input_sha256, meta.source.exporter_version
+[(c.id, c.z_m, c.thickness_m) for c in meta.copper_layers]
+```
+
+Supported subset; anything else raises `ValueError`:
+
+| Item | Supported | Rejected |
+| --- | --- | --- |
+| Document | Uncompressed XML, root `IPC-2581` in the IPC namespace, revision C | Other roots/namespaces, revision B, zip archives, malformed XML |
+| Units | `CadHeader` and `Content` dictionaries in `MILLIMETER` | `INCH`, `MICRON`, missing units |
+| Layers | Unique names; copper is `layerFunction="CONDUCTOR"` | Duplicate or unnamed layers; `SIGNAL`, `PLANE`, `MIXED`, `CONDFOIL`, `CONDFILM` |
+| Stackup | One `Stackup`, one `StackupGroup`, unique integer `sequence`, each layer once | Missing or multiple stackups/groups, unknown or repeated references |
+| Copper span | `CONDUCTOR` and `DIEL*` rows with finite positive thickness, dielectric between coppers | Other functions between coppers, adjacent coppers, copper missing from the stackup |
+
+Stack Z: zero at the outer face of the first copper layer in stackup
+`sequence`, increasing with sequence; `z_m` is the copper centre. Rows before
+the first and after the last copper are ignored. Thicknesses are summed as
+exact decimals in millimetres and converted to metres once. Layer `id` and
+`label` are the exported layer name.
+
+`SourceInfo.xy_transform` is `(1e-3, 0, 0, 0, -1e-3, 0)`: millimetres to
+metres with IPC Y reversed once, as recommended above. This reader stores no
+XY data, so it does not apply the transform; the geometry reader must apply
+it exactly once. `exporter_version` is `"<name> <revision>"` of the single
+`HistoryRecord/FileRevision/SoftwarePackage`, or `None` when that is absent,
+incomplete or ambiguous. `input_sha256` is the hash of the parsed bytes.
+
+These conventions are recommendations pending Erekle's approval. The reader
+has been run on synthetic XML only (`tests/test_ipc2581_metadata.py`); reading
+a real KiCad 10 export, dielectric sublayers and other exporters are untested.

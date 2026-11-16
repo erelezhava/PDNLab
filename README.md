@@ -220,6 +220,13 @@ contacts. See the [development contract](docs/phase2-board-model-contract.md)
 and `tests/test_board.py` for synthetic examples. Production importing remains
 unimplemented.
 
+`pdnlab_dc.ipc2581_metadata.read_ipc2581_metadata(path)` reads only the header
+and stackup of an IPC-2581 revision C file in millimetres: the input hash,
+exporter version when declared, and ordered copper layers with centre Z and
+thickness in metres. It returns `Ipc2581Metadata`, not a board: no nets,
+tracks, pads, zones or drills are read, and unsupported revisions, units or
+stackups raise. It has been tested on synthetic XML only.
+
 ## Phase 0 experiments
 
 | # | Experiment | Status |
