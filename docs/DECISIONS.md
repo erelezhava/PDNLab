@@ -2063,3 +2063,72 @@ increments); KiCad 11.
 
 Stopped after reading and linking holes: no cutting, barrels, union, meshing,
 setup, CLI or solve.
+
+## 2026-11-21 — Phase 2 small task: thermal reliefs (zone fills meeting pads)
+
+**Result / Recommendation: thermal reliefs need no reader change. KiCad writes
+the spokes as part of the zone's fill outline, and the copper reader already
+returns them: on Erekle's public thermal board every pad and via meets the fill
+as KiCad filled it, and the fills match KiCad's SVG plot. Cloud workspace: 3 new
+tests pass; full suite 620 passed, 4 skipped on Python 3.11.18, 3.13.18 and
+3.14.6; checked on current `origin/main` before delivery. Merged as PR #21.
+Recommendation: close the importer readers (increments 1 to 7) and start
+assembling a full `BoardModel`.**
+
+Worked step by step with Erekle. Board drawn by Erekle (2026-11-21), public,
+in `tests/fixtures/thermal_relief`: 4 copper layers; a GND zone on F.Cu
+(thermal gap 0.5 mm, spoke width 0.3 mm) and one on In1.Cu and In2.Cu (gap
+0.5 mm, spokes 0.5 mm, priority 1); a through-hole test point TP1 (2 mm round
+pad, 1 mm drill); an 0603 resistor R1 at 30° with pad 2 on GND and pad 1 on
++3V3; an SMD test point TP2 set to a solid zone connection; two GND vias. B.Cu
+has no zone. Exported with KiCad 10.0.8 as for the pad board (IPC-2581 and
+per-layer SVG plots); the KiCad project itself is kept outside the repository.
+
+Method: for each pad, the ring from its edge out to half the thermal gap is
+intersected with the fill. No fill in the ring means isolated, one piece
+filling over 95% of it means solid, otherwise each piece is a spoke and its width
+is its area divided by the ring width. Spoke widths are compared with the zone
+settings read from the `.kicad_pcb`, not typed into the test. KiCad's plotted
+fills are made valid with Shapely on the reference side only; the reader never
+repairs geometry.
+
+Measured (scratch scripts first, then the committed test):
+
+| Pad | Layer | Connection | Spoke width | Overlap with pad |
+| --- | --- | --- | --- | --- |
+| TP1 | F.Cu | 4 spokes | 0.301 mm | 0.6023 mm² |
+| TP1 | In1.Cu, In2.Cu | 4 spokes | 0.504 mm | 1.0180 mm² |
+| R1 pad 2 | F.Cu | 3 spokes (the fourth would reach the +3V3 pad) | 0.300 mm | 0.36 mm² |
+| TP2 | F.Cu | solid | — | 7.5454 mm² |
+| 2 vias | F.Cu, In1.Cu, In2.Cu | solid | — | 0.2815 mm² each |
+| R1 pad 1 (+3V3) | F.Cu | isolated | — | 0 |
+
+Fills against KiCad's plot (symmetric difference / area): F.Cu 1540.8821 mm² on
+both sides, 0.0000% (0.018% in the windows around pads); In1.Cu and In2.Cu
+1749.0137 against 1749.0140 mm², 0.012%; B.Cu no fill on either side. Three
+fills read (`fill:F.Cu:0` with 4 holes, `fill:In1.Cu:0` and `fill:In2.Cu:0`
+with 1 each), all recovered from KiCad's fractured outlines.
+
+Findings:
+
+- Spokes and solid connections overlap their pads, they do not just touch, so
+  the later union per net and layer joins them without a tolerance.
+- The reader reads no thermal-relief metadata and needs none: the spoke geometry
+  is in the fill, as the Phase 2 contract expected.
+- Spokes are as narrow as 0.3 mm; experiment 8 already showed unrefined meshes up
+  to 1.9% low because of 0.5 mm spokes. This is input to the meshing increment,
+  not a reader issue.
+
+Tests: `tests/test_thermal_relief_fixture.py` (3): fills against KiCad's plot,
+whole board and around every pad; connection kind, spoke count and width, and
+overlap for all 12 pad and via positions on zone layers; zone settings and fill
+shapes. Deliberate one-line bugs, run with `PYTHONDONTWRITEBYTECODE=1`, each made
+tests fail: pad rotation reversed (1), pad rotation ignored (1), IPC Y not
+reversed (1), slits not split (all 3, stopped by the reader's own fill validity
+check).
+
+Not run or not covered: thermal reliefs on the private board (its fills were
+already matched to KiCad in the fills increment, but pad connections were not
+classified); zones with a hatched fill; KiCad 11.
+
+Stopped after checking: no union, meshing, setup, CLI or solve.

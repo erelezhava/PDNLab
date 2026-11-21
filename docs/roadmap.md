@@ -5,13 +5,14 @@ measured results live in [DECISIONS.md](DECISIONS.md); the full plan, gates and
 estimates in [project-plan.md](project-plan.md). Update this file after each
 increment, in the same commit or pull request.
 
-Last updated: 2026-11-21, after the drill reader was merged (PR #19).
+Last updated: 2026-11-21, after the thermal-relief board was merged (PR #21).
 
 ## Where we are
 
-Phase 2 (real boards). Importer steps 1 to 6 are merged: every kind of copper
-and hole in a KiCad 10 IPC-2581 export is read and checked against KiCad. The
-thermal-relief board is next. The solver core is accepted on synthetic cases.
+Phase 2 (real boards). Importer steps 1 to 7 are merged: every kind of copper
+and hole in a KiCad 10 IPC-2581 export is read and checked against KiCad,
+including fills meeting pads through thermal spokes. Assembling a full
+`BoardModel` is next. The solver core is accepted on synthetic cases.
 Nothing yet assembles a full board, meshes it and solves it outside the
 experiments.
 
@@ -41,8 +42,8 @@ after release 0.1.
 | 4 | Tracks, segments and arcs (`track_outline.py`, `ipc2581_copper.py`) | Merged, PR #16; public arc board 13/13 and real board 785/785 tracks match KiCad |
 | 5 | Pads and via copper (`pad_outline.py`, `ipc2581_copper.py`) | Merged, PR #18; public pad board 36/36 and real board 1,206/1,206 pad and via shapes match KiCad's plot |
 | 6 | Drill holes: `DrillFeature` records linked to pad and via copper (`ipc2581_copper.py`) | Merged, PR #19; public pad board 5/5 and real board 218/218 holes match KiCad's file. Holes are recorded, not cut (cutting and barrels in 9 and 11) |
-| 7 | Thermal reliefs: public test board, fills meeting pads checked against KiCad's plot | Next (Erekle, 2026-11-21) |
-| 8 | Assemble a full `BoardModel` from the readers | Planned |
+| 7 | Thermal reliefs: public test board, fills meeting pads checked against KiCad's plot | Merged, PR #21; no reader change; public thermal board 12/12 pad and via connections and all fills match KiCad |
+| 8 | Assemble a full `BoardModel` from the readers | Next |
 | 9 | Copper cleanup per net and layer (union of fills, tracks, pads; holes cut at the setup's radius) | Planned |
 | 10 | Meshing real copper with Gmsh (start from experiment 8's settings) | Planned |
 | 11 | Via and pin contact model on real boards (rims and barrels, setup plating) | Planned |
@@ -73,7 +74,8 @@ decided when it starts.
   changes edge current density.
 - Mesh sizes (meshing increment): start from experiment 8 (h = 0.5 mm, 96-sided
   holes, growth 0.15 mm per mm from holes and through-hole pads; refinement also
-  needed on thermal spokes) and settle by release gate 5.
+  needed on thermal spokes, as narrow as 0.3 mm on the thermal board) and settle
+  by release gate 5.
 - Custom pads: whether KiCad writes their outline with Y already flipped is
   accepted from KiCad's source, not yet shown on an export with an asymmetric
   custom pad. Revisit if a real board uses custom pads (the test board has none).
@@ -101,3 +103,6 @@ decided when it starts.
   mechanical, span from the drill layer), linked by `drill_id` to the pad and
   via copper of the same padstack and net at exactly its position on each span
   layer; recorded, not cut; slots, backdrills and tolerances raise.
+- Thermal reliefs: read as part of the zone fill, no relief metadata needed;
+  spokes and solid connections overlap their pads (public board
+  `tests/fixtures/thermal_relief`).
