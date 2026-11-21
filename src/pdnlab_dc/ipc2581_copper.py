@@ -1,4 +1,4 @@
-"""IPC-2581 nets, filled-zone contours and tracks. This is not yet a board importer.
+"""IPC-2581 nets, zone fills, tracks, pads and vias. This is not yet a board importer.
 
 Builds on ipc2581_metadata (header, units, stackup, provenance) and adds:
 * Net records: every distinct Set ``net`` attribute in the Step. KiCad 10 writes no
@@ -10,9 +10,15 @@ Builds on ipc2581_metadata (header, units, stackup, provenance) and adds:
   the same UserSpecial, one feature per element, outlined by ``track_outline`` with
   round ends at a 1 µm chord error. KiCad writes copper graphic segments and arcs the
   same way, so they are read as tracks too.
+* CopperFeature records of kind "pad" (component pads, ID
+  ``pad:<layer>:<component>.<pin>``, with ``#2``... for a repeated pin) and "via"
+  (``via:<layer>:<k>``): each Pad on a copper layer, its DictionaryStandard shape
+  (Circle, RectCenter, Oval, RectRound, RectCham or a Contour for custom and
+  trapezoid pads) turned counter-clockwise by its Xform rotation about its Location.
+  Outlines are solid: drill holes and barrels belong to the drills increment.
 
-Copper that later increments will read is counted in ``unread``, by kind, layer and
-net, without reading or checking its geometry: pads and via pads. Copper that no planned increment reads raises instead, so copper on
+``unread`` counts copper a later increment will read; KiCad boards leave it empty
+now. Copper that no planned increment reads raises instead, so copper on
 a net is never left out of a result: teardrops, copper text, footprint graphics and
 board graphic shapes on copper. A footprint-owned zone raises, because the export drops
 its net. LayerFeatures of other layers (drills, slots, mask, paste, legend) are listed
@@ -46,15 +52,17 @@ from shapely.validation import explain_validity
 from pdnlab_dc.board import BoardModel, CopperFeature, CopperLayer, Net, SourceInfo
 from pdnlab_dc.ipc2581_metadata import (_DECIMAL, CONVENTIONS, NAMESPACE, _q,
                                         parse_ipc2581_tree)
+from pdnlab_dc.pad_outline import (chamfer_outline, circle_outline, oval_outline, place,
+                                  rect_outline, roundrect_outline)
 from pdnlab_dc.track_outline import arc_outline, segment_outline
 
-SCOPE = ("Nets, filled-zone contours and tracks on copper layers only. Pads, vias and "
-         "drills were not read: see unread and uninspected_layers. This is not a complete "
-         "board.")
+SCOPE = ("Nets, filled-zone contours, tracks, pads and vias on copper layers. Drills were "
+         "not read: pad and via outlines are solid, without holes or barrels (see "
+         "uninspected_layers). This is not a complete board.")
 ASSUMPTIONS = (
     SCOPE,
-    "xy_transform (source mm to stored m, IPC Y reversed once) was applied once, to fill "
-    "and track coordinates.",
+    "xy_transform (source mm to stored m, IPC Y reversed once) was applied once, to fill, "
+    "track and pad coordinates.",
     "Nets are the distinct Set net attributes in the Step, with their exported names; copper "
     "in a Set without one is unassigned (net_id None).",
     "A fill outline that returns along its own edge (KiCad's fractured form) was split at each "
@@ -62,6 +70,10 @@ ASSUMPTIONS = (
     "Tracks and copper graphic segments/arcs are outlines with round ends; every vertex lies "
     "on its true circle or edge, within 1 µm chord error (inner arc edges may add up to 1 µm "
     "of copper; the total area is slightly less than exact).",
+    "Pads are their dictionary shape turned counter-clockwise (IPC, Y up) by the Pad's Xform "
+    "rotation about its Location; round parts use the same 1 µm rule. Per-layer padstacks, "
+    "pad offsets and rounded chamfered pads are not exported faithfully by KiCad 10 and are "
+    "not detectable here.",
 ) + CONVENTIONS
 
 # Set geometryUsage values: copper no planned increment reads, so they raise.
@@ -91,6 +103,7 @@ class Ipc2581Copper:
     nets: tuple[Net, ...]
     fills: tuple[CopperFeature, ...]
     tracks: tuple[CopperFeature, ...]
+    pads: tuple[CopperFeature, ...]
     unread: tuple[UnreadCount, ...]
     uninspected_layers: tuple[str, ...]
     scope: str = SCOPE
@@ -192,12 +205,46 @@ def _signed_area(ring):
     return sum(x0*y1 - x1*y0 for (x0, y0), (x1, y1) in zip(ring, ring[1:])) / 2
 
 
+def _contour_rings(element, ref, context):
+    """(outline, holes) as exact source-unit rings from a Contour: one Polygon (slits
+    split as described above) then Cutouts. Used for fills and custom pad shapes."""
+    children = list(_children(element, ref))
+    tags = [tag for _, tag, _ in children]
+    if element.attrib or not tags or tags[0] != "Polygon" or \
+            any(tag != "Cutout" for tag in tags[1:]):
+        raise ValueError(f"{context}: Contour must hold one Polygon then Cutout elements "
+                         f"only, found {tags}")
+    rings = _split_slits(_ring(children[0][0], context), context)
+    areas = [_signed_area(r) for r in rings]
+    total = sum(areas)
+    if total == 0 or any(a == 0 for a in areas):
+        raise ValueError(f"{context}: outline ring with zero area")
+    outer = [i for i, a in enumerate(areas) if (a > 0) == (total > 0)]
+    if len(outer) != 1:
+        raise ValueError(f"{context}: {len(outer)} outlines after slit removal; expected one")
+    holes = [r for i, r in enumerate(rings) if i != outer[0]]
+    holes += [_ring(child, context) for child, _, _ in children[1:]]
+    return rings[outer[0]], holes
+
+
+def _attributes(element, required, optional=(), context=""):
+    """Exact attribute check: all of ``required``, any of ``optional``, nothing else."""
+    names = set(element.attrib)
+    if not set(required) <= names or names - set(required) - set(optional) or len(element):
+        raise ValueError(f"{context}: {_tag(element)} must have attributes {sorted(required)}"
+                         + (f" (optionally {sorted(optional)})" if optional else "")
+                         + f" and no children; found {sorted(names)}"
+                         + (f" and {[_tag(c) for c in element]}" if len(element) else ""))
+
+
 class _CopperLayerReader:
-    def __init__(self, layer, transform, fills, tracks, unread):
+    def __init__(self, layer, transform, fills, tracks, pads, shapes, unread):
         self.layer, self.fills, self.unread = layer, fills, unread
         self.transform = [Decimal(repr(v)) for v in transform]
         self.index = 0
         self.tracks, self.track_index = tracks, 0
+        self.pads, self.shapes, self.via_index, self.pad_ids = pads, shapes, 0, Counter()
+        self.local_shapes = {}   # dictionary id -> outline in the pad frame (source units)
         self.matrix = tuple(float(v) for v in transform)
         # The chord tolerance in source units: 1 µm divided by the source-to-metre scale.
         self.track_tol = TRACK_TOL_M / abs(self.matrix[0])
@@ -229,7 +276,7 @@ class _CopperLayerReader:
             raise ValueError(f"{context}: Set padUsage {pad_usage!r} is not supported")
         for child, tag, child_ref in _children(element, ref):
             if tag == "Pad":
-                self.count("via pad" if pad_usage == "VIA" else "pad", net)
+                self._pad(child, net, pad_usage == "VIA", child_ref)
             elif tag == "Features" and not nested:
                 self._features(child, net, child_ref)
             elif tag == "Set" and not nested:
@@ -282,28 +329,73 @@ class _CopperLayerReader:
 
     def _contour(self, element, net, ref):
         context = _context(self.layer, net, ref)
-        children = list(_children(element, ref))
-        tags = [tag for _, tag, _ in children]
-        if element.attrib or not tags or tags[0] != "Polygon" or \
-                any(tag != "Cutout" for tag in tags[1:]):
-            raise ValueError(f"{context}: Contour must hold one Polygon then Cutout elements "
-                             f"only, found {tags}")
-        rings = _split_slits(_ring(children[0][0], context), context)
-        areas = [_signed_area(r) for r in rings]
-        total = sum(areas)
-        if total == 0 or any(a == 0 for a in areas):
-            raise ValueError(f"{context}: outline ring with zero area")
-        outer = [i for i, a in enumerate(areas) if (a > 0) == (total > 0)]
-        if len(outer) != 1:
-            raise ValueError(f"{context}: {len(outer)} outlines after slit removal; expected one")
-        holes = [r for i, r in enumerate(rings) if i != outer[0]]
-        holes += [_ring(child, context) for child, _, _ in children[1:]]
-        polygon = Polygon(self.to_metres(rings[outer[0]]), [self.to_metres(h) for h in holes])
+        outline, holes = _contour_rings(element, ref, context)
+        polygon = Polygon(self.to_metres(outline), [self.to_metres(h) for h in holes])
         if not polygon.is_valid:
             raise ValueError(f"{context}: invalid fill polygon: {explain_validity(polygon)}")
         self.fills.append(CopperFeature(f"fill:{self.layer}:{self.index}", net, self.layer,
                                         "fill", polygon, source_ref=ref))
         self.index += 1
+
+    def _pad(self, element, net, via, ref):
+        context = _context(self.layer, net, ref)
+        if set(element.attrib) - {"padstackDefRef"}:
+            raise ValueError(f"{context}: Pad attributes {sorted(element.attrib)} are not "
+                             "supported; only padstackDefRef")
+        parts = {}
+        for child, tag, _ in _children(element, ref):
+            if tag not in ("Xform", "Location", "StandardPrimitiveRef", "PinRef"):
+                raise ValueError(f"{context}: {tag} in Pad is not supported")
+            if tag in parts:
+                raise ValueError(f"{context}: more than one {tag} in Pad")
+            parts[tag] = child
+        for tag in ("Location", "StandardPrimitiveRef"):
+            if tag not in parts:
+                raise ValueError(f"{context}: Pad has no {tag}")
+        rotation = 0.0
+        if "Xform" in parts:
+            # KiCad writes only the rotation; mirror, scale or offsets would change the shape.
+            _attributes(parts["Xform"], (), ("rotation",), context)
+            rotation = float(_number(parts["Xform"].get("rotation", "0"), context))
+        _attributes(parts["Location"], ("x", "y"), (), context)
+        _attributes(parts["StandardPrimitiveRef"], ("id",), (), context)
+        x, y = (float(_number(parts["Location"].get(k), context)) for k in ("x", "y"))
+        local = self._local_shape(parts["StandardPrimitiveRef"].get("id"), context)
+        try:
+            placed = place(local, x, y, rotation)
+        except ValueError as error:
+            raise ValueError(f"{context}: {error}") from None
+        a, b, tx, c, d, ty = self.matrix
+        move = lambda ring: [(a*px + b*py + tx, c*px + d*py + ty) for px, py in ring]
+        polygon = Polygon(move(placed.exterior.coords), [move(r.coords) for r in placed.interiors])
+        if not polygon.is_valid:
+            raise ValueError(f"{context}: invalid pad outline: {explain_validity(polygon)}")
+        pin = parts.get("PinRef")
+        if via:
+            if pin is not None:
+                raise ValueError(f"{context}: via pad with a PinRef")
+            feature_id, kind = f"via:{self.layer}:{self.via_index}", "via"
+            self.via_index += 1
+        else:
+            if pin is None:
+                raise ValueError(f"{context}: component pad without a PinRef")
+            _attributes(pin, ("componentRef", "pin"), (), context)
+            base = f"pad:{self.layer}:{pin.get('componentRef')}.{pin.get('pin')}"
+            self.pad_ids[base] += 1
+            feature_id = base if self.pad_ids[base] == 1 else f"{base}#{self.pad_ids[base]}"
+            kind = "pad"
+        self.pads.append(CopperFeature(feature_id, net, self.layer, kind, polygon,
+                                       source_ref=ref))
+
+    def _local_shape(self, shape_id, context):
+        """Pad-frame outline of a dictionary shape, in source units (built once per id)."""
+        if shape_id not in self.local_shapes:
+            if shape_id not in self.shapes:
+                raise ValueError(f"{context}: pad shape {shape_id!r} is not in DictionaryStandard")
+            shape, ref = self.shapes[shape_id]
+            where = f"{context}, shape {shape_id!r} ({ref})"
+            self.local_shapes[shape_id] = _dictionary_outline(shape, ref, where, self.track_tol)
+        return self.local_shapes[shape_id]
 
     def _track(self, element, tag, net, ref):
         context = _context(self.layer, net, ref)
@@ -345,6 +437,64 @@ class _CopperLayerReader:
         self.track_index += 1
 
 
+_CORNER_FLAGS = ("upperRight", "upperLeft", "lowerRight", "lowerLeft")
+
+
+def _dictionary_outline(shape, ref, context, tol):
+    """Pad-frame outline (source units, Y up, centred) of one DictionaryStandard shape."""
+    tag = _tag(shape)
+    size = lambda name: float(_number(shape.get(name), context))
+    try:
+        if tag == "Circle":
+            _attributes(shape, ("diameter",), (), context)
+            return circle_outline(size("diameter"), tol)
+        if tag == "RectCenter":
+            _attributes(shape, ("width", "height"), (), context)
+            return rect_outline(size("width"), size("height"))
+        if tag == "Oval":
+            _attributes(shape, ("width", "height"), (), context)
+            return oval_outline(size("width"), size("height"), tol)
+        if tag == "RectRound":
+            _attributes(shape, ("width", "height", "radius") + _CORNER_FLAGS, (), context)
+            if any(shape.get(flag) != "true" for flag in _CORNER_FLAGS):
+                raise ValueError("RectRound with some corners not rounded is not supported")
+            return roundrect_outline(size("width"), size("height"), size("radius"), tol)
+        if tag == "RectCham":
+            _attributes(shape, ("width", "height", "chamfer"), _CORNER_FLAGS, context)
+            if any(shape.get(flag) not in (None, "true") for flag in _CORNER_FLAGS):
+                raise ValueError("RectCham corner flags must be 'true' when present")
+            corners = {flag for flag in _CORNER_FLAGS if shape.get(flag) == "true"}
+            return chamfer_outline(size("width"), size("height"), size("chamfer"), corners)
+        if tag == "Contour":
+            outline, holes = _contour_rings(shape, ref, context)
+            as_float = lambda ring: [(float(x), float(y)) for x, y in ring]
+            polygon = Polygon(as_float(outline), [as_float(h) for h in holes])
+            if not polygon.is_valid:
+                raise ValueError(f"invalid custom pad outline: {explain_validity(polygon)}")
+            return polygon
+    except ValueError as error:
+        message = str(error)
+        raise ValueError(message if message.startswith(context) else f"{context}: {message}") \
+            from None
+    raise ValueError(f"{context}: pad shape {tag} is not supported")
+
+
+def _shape_dictionary(root):
+    """DictionaryStandard EntryStandard id -> (its one shape element, element path)."""
+    shapes = {}
+    for dictionary in root.iter(_q("DictionaryStandard")):
+        for entry, tag, ref in _children(dictionary, "DictionaryStandard"):
+            if tag != "EntryStandard":
+                continue
+            shape_id, content = entry.get("id"), list(entry)
+            if shape_id in shapes:
+                raise ValueError(f"{ref}: duplicate dictionary id {shape_id!r}")
+            if len(content) != 1:
+                raise ValueError(f"{ref}: EntryStandard {shape_id!r} must hold exactly one shape")
+            shapes[shape_id] = (content[0], f"{ref}/{_tag(content[0])}[1]")
+    return shapes
+
+
 def parse_ipc2581_copper(data):
     """Nets and zone-fill features from the bytes of an IPC-2581 C file (see module doc)."""
     root, meta = parse_ipc2581_tree(data)
@@ -358,7 +508,8 @@ def parse_ipc2581_copper(data):
                              "attributes only and does not read net lists")
     defined = {layer.get("name") for layer in cad.findall(_q("Layer"))}
     copper = [layer.id for layer in meta.copper_layers]
-    nets, fills, tracks, unread, seen, uninspected = set(), [], [], Counter(), set(), []
+    nets, fills, tracks, pads, unread, seen, uninspected = set(), [], [], [], Counter(), set(), []
+    shapes = _shape_dictionary(root)
     for feature, tag, _ in _children(steps[0], "Step"):
         if tag != "LayerFeature":
             continue
@@ -378,7 +529,8 @@ def parse_ipc2581_copper(data):
         if layer not in copper:
             uninspected.append(layer)
             continue
-        reader = _CopperLayerReader(layer, meta.source.xy_transform, fills, tracks, unread)
+        reader = _CopperLayerReader(layer, meta.source.xy_transform, fills, tracks, pads, shapes,
+                                    unread)
         for child, child_tag, child_ref in _children(feature, ref):
             if child_tag != "Set":
                 raise ValueError(f"{child_ref}: {child_tag} in a copper LayerFeature is not "
@@ -387,13 +539,13 @@ def parse_ipc2581_copper(data):
     source = replace(meta.source, assumptions=ASSUMPTIONS)
     net_records = tuple(Net(name, name) for name in sorted(nets))
     # Reuse the model's reference checks (unique IDs, known layers and nets); not returned.
-    BoardModel(source, meta.copper_layers, net_records, tuple(fills) + tuple(tracks))
+    BoardModel(source, meta.copper_layers, net_records, tuple(fills) + tuple(tracks) + tuple(pads))
     order = {layer: i for i, layer in enumerate(copper)}
     counts = tuple(UnreadCount(kind, layer, net, n) for (layer, kind, net), n in
                    sorted(unread.items(), key=lambda item: (order[item[0][0]], item[0][1],
                                                             item[0][2] or "")))
     return Ipc2581Copper(source, meta.copper_layers, net_records, tuple(fills), tuple(tracks),
-                         counts, tuple(uninspected))
+                         tuple(pads), counts, tuple(uninspected))
 
 
 def read_ipc2581_copper(path):

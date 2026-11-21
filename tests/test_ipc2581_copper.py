@@ -95,13 +95,20 @@ def layer_feature(layer, content):
     return f'<LayerFeature layerRef="{layer}">{content}</LayerFeature>'
 
 
-def export(f_cu=F_CU, b_cu=B_CU, drill=DRILL, *, step=None, step_extra="", revision="C"):
+# Pad shapes the synthetic boards refer to (DictionaryStandard, millimetres).
+SHAPES = ('<EntryStandard id="C1"><Circle diameter="0.6"/></EntryStandard>'
+          '<EntryStandard id="R1"><RectCenter width="1.0" height="0.6"/></EntryStandard>')
+
+
+def export(f_cu=F_CU, b_cu=B_CU, drill=DRILL, *, step=None, step_extra="", revision="C",
+           shapes=SHAPES):
     if step is None:
         step = (f'<Step name="board"><Datum x="0.0" y="0.0"/>{step_extra}'
                 f'{layer_feature("F.Cu", f_cu)}{layer_feature("B.Cu", b_cu)}'
                 f'{layer_feature("F.Cu_B.Cu", drill)}</Step>')
     return (f'<?xml version="1.0" encoding="utf-8"?>\n<IPC-2581 revision="{revision}" '
-            f'xmlns="{NAMESPACE}"><Content><DictionaryStandard units="MILLIMETER"/></Content>'
+            f'xmlns="{NAMESPACE}"><Content><DictionaryStandard units="MILLIMETER">{shapes}'
+            f'</DictionaryStandard></Content>'
             f'<Ecad name="Design"><CadHeader units="MILLIMETER"/>'
             f'<CadData>{LAYERS}{STACKUP}{step}</CadData></Ecad></IPC-2581>').encode()
 
@@ -176,10 +183,7 @@ def test_feature_ids_and_source_references_are_stable_and_traceable():
 
 def test_unread_copper_is_counted_not_read_and_other_layers_are_listed():
     result = parse_ipc2581_copper(export())
-    assert result.unread == (
-        UnreadCount("pad", "F.Cu", "PWR", 1),
-        UnreadCount("via pad", "F.Cu", "PWR", 1),
-        UnreadCount("via pad", "B.Cu", "PWR", 1))
+    assert result.unread == ()   # pads and vias are read since the pad increment
     assert result.uninspected_layers == ("F.Cu_B.Cu",)
     assert len(result.fills) == 4
 
@@ -198,7 +202,7 @@ def test_result_is_scoped_and_not_a_board_model():
     meta = parse_ipc2581_metadata(data)
     assert isinstance(result, Ipc2581Copper) and not isinstance(result, BoardModel)
     assert {f.name for f in fields(result)} == {"source", "copper_layers", "nets", "fills", "tracks",
-                                                "unread", "uninspected_layers", "scope"}
+                                                "pads", "unread", "uninspected_layers", "scope"}
     assert result.scope == SCOPE and "not read" in SCOPE and "not a complete board" in SCOPE
     assert result.source.assumptions[0] == SCOPE
     assert any("applied once" in a for a in result.source.assumptions)
@@ -316,13 +320,6 @@ def test_errors_name_layer_net_and_element(content, net):
     assert "LayerFeature[@layerRef='F.Cu']/Set[1]/Features[1]" in str(error.value)
 
 
-def test_unread_pads_are_counted_not_validated():
-    # The pad increment will validate Pads; here an odd Pad is only counted.
-    odd = '<Pad padstackDefRef="?"><Xform rotation="45"/></Pad>'
-    result = parse_ipc2581_copper(export(f_cu=f'<Set net="PWR">{odd}{odd}</Set>'))
-    assert UnreadCount("pad", "F.Cu", "PWR", 2) in result.unread
-
-
 def test_footprint_set_without_copper_is_accepted_and_nothing_counted():
     result = parse_ipc2581_copper(export(f_cu='<Set componentRef="U1"><Features><Location x="0" y="0"/>'
                                              '<UserSpecial/></Features></Set>'))
@@ -431,3 +428,139 @@ def test_unsupported_tracks_raise_with_context(content, message):
 def test_track_under_a_nonzero_location_raises():
     with pytest.raises(ValueError, match="contour or track under a nonzero Location"):
         parse_ipc2581_copper(export(f_cu=f'<Set net="PWR">{special(SEGMENT, location=(1, 0))}</Set>'))
+
+
+# ---- Pads and vias ------------------------------------------------------------------------
+PAD_SHAPES = SHAPES + (
+    '<EntryStandard id="CHAM"><RectCham width="2.0" height="1.0" chamfer="0.4" upperLeft="true"/>'
+    '</EntryStandard>'
+    '<EntryStandard id="RR"><RectRound width="1.2" height="1.4" radius="0.25" upperRight="true" '
+    'upperLeft="true" lowerRight="true" lowerLeft="true"/></EntryStandard>'
+    '<EntryStandard id="OV"><Oval width="1.7" height="2.0"/></EntryStandard>'
+    f'<EntryStandard id="TRI">{contour([(1, 0), (0.5, -0.75), (-0.5, -0.75), (-0.5, 0.75), (0.5, 0.75)])}'
+    '</EntryStandard>')
+
+
+def pad(shape, x, y, rotation=None, pin=("U1", "1")):
+    xform = f'<Xform rotation="{rotation}"/>' if rotation is not None else ""
+    ref = f'<PinRef componentRef="{pin[0]}" pin="{pin[1]}"/>' if pin else ""
+    return (f'<Pad padstackDefRef="P">{xform}<Location x="{x}" y="{y}"/>'
+            f'<StandardPrimitiveRef id="{shape}"/>{ref}</Pad>')
+
+
+def pads_of(content, shapes=PAD_SHAPES):
+    return parse_ipc2581_copper(export(f_cu=content, b_cu="", shapes=shapes)).pads
+
+
+def test_pads_and_vias_are_read_on_every_layer_with_ids_and_kinds():
+    result = parse_ipc2581_copper(export())
+    assert [(f.id, f.kind, f.net_id, f.source_ref) for f in result.pads] == [
+        ("via:F.Cu:0", "via", "PWR", "LayerFeature[@layerRef='F.Cu']/Set[1]/Pad[1]"),
+        ("pad:F.Cu:U1.3", "pad", "PWR", "LayerFeature[@layerRef='F.Cu']/Set[2]/Pad[1]"),
+        ("via:B.Cu:0", "via", "PWR", "LayerFeature[@layerRef='B.Cu']/Set[2]/Pad[1]")]
+    via = result.pads[0].geometry   # 0.6 mm circle at IPC (25, -2) -> metres, Y reversed
+    assert via.centroid.coords[0] == pytest.approx((0.025, 0.002), abs=1e-12)
+    # A 0.6 mm circle has 39 vertices at 1 µm, about 0.43% below a true circle.
+    assert 0.99 * math.pi * 0.0003 ** 2 < via.area < math.pi * 0.0003 ** 2
+    rect = result.pads[1].geometry  # 1.0 x 0.6 mm rectangle at IPC (5, -5)
+    assert rect.bounds == pytest.approx((0.0045, 0.0047, 0.0055, 0.0053), abs=1e-12)
+
+
+def test_rotation_is_counter_clockwise_in_ipc_coordinates_and_y_is_reversed_once():
+    # 2 x 1 mm pad, only its upper-left corner chamfered, turned 90 degrees at IPC (10, -20).
+    # Counter-clockwise, upper-left (-1, 0.5) goes to (-0.5, -1): IPC (9.5, -21) -> metres
+    # (0.0095, 0.021). The opposite end of that side, (1, 0.5) -> (9.5, -19), stays square.
+    feature, = pads_of(f'<Set net="PWR">{pad("CHAM", 10, -20, 90)}</Set>')
+    assert not feature.geometry.contains(Point(0.00952, 0.02098))   # cut corner
+    assert feature.geometry.contains(Point(0.00952, 0.01902))       # square corner
+    assert feature.geometry.contains(Point(0.01048, 0.02098)) and feature.geometry.contains(Point(0.01048, 0.01902))
+    assert feature.geometry.area == pytest.approx((2.0 - 0.08) * 1e-6, rel=1e-12)
+
+
+def test_every_dictionary_shape_with_its_size():
+    content = ('<Set net="A">' + pad("RR", 0, 0, pin=("R1", "1")) + pad("OV", 10, 0, pin=("J1", "2"))
+               + pad("TRI", 20, 0, 20, pin=("JP1", "1")) + pad("C1", 30, 0, pin=("TP1", "1"))
+               + pad("R1", 40, 0, pin=("R2", "1")) + "</Set>")
+    rr, ov, tri, circle, rect = pads_of(content)
+    assert rr.geometry.area == pytest.approx((1.2 * 1.4 - (4 - math.pi) * 0.25 ** 2) * 1e-6, rel=1e-3)
+    assert rr.geometry.bounds == pytest.approx((-0.0006, -0.0007, 0.0006, 0.0007), abs=1e-9)
+    # The apex of a round end need not be a vertex: within the 1 µm chord rule of the full size.
+    assert ov.geometry.bounds == pytest.approx((0.00915, -0.001, 0.01085, 0.001), abs=1e-6)
+    assert 0.99 * math.pi * 0.0003 ** 2 < circle.geometry.area < math.pi * 0.0003 ** 2
+    assert rect.geometry.area == pytest.approx(0.6e-6, rel=1e-12)
+    # Custom outline as given, turned 20 degrees counter-clockwise, then Y reversed: the tip
+    # (1, 0) lands at (20 + cos 20, sin 20) in IPC and (.., -sin 20) mm in metres.
+    a = math.radians(20)
+    tip = ((20 + math.cos(a)) * 1e-3, -math.sin(a) * 1e-3)
+    assert any(math.dist(tip, p) < 1e-12 for p in tri.geometry.exterior.coords)
+    assert tri.geometry.area == pytest.approx(1.875e-6, rel=1e-12)   # 1 x 1.5 rectangle + triangle 1.5 x 0.5 / 2
+
+
+def test_unassigned_pads_repeated_pin_numbers_and_nested_via_sets():
+    content = (f'<Set>{pad("C1", 1, -1, pin=("TP1", "1"))}</Set>'
+               f'<Set net="GND">{pad("R1", 0, 0, pin=("U2", "9"))}{pad("R1", 3, 0, pin=("U2", "9"))}'
+               f'<Set net="GND" padUsage="VIA">{pad("C1", 6, 0, pin=None)}</Set></Set>')
+    no_net, first, second, via = pads_of(content)
+    assert (no_net.id, no_net.net_id) == ("pad:F.Cu:TP1.1", None)
+    assert (first.id, second.id) == ("pad:F.Cu:U2.9", "pad:F.Cu:U2.9#2")
+    assert (via.id, via.kind, via.net_id) == ("via:F.Cu:0", "via", "GND")
+
+
+@pytest.mark.parametrize("content,shapes,message", [
+    (pad("NOPE", 0, 0), PAD_SHAPES, "pad shape 'NOPE' is not in DictionaryStandard"),
+    (pad("R1", 0, 0).replace('<Location', '<Xform rotation="0" mirror="true"/><Location'), PAD_SHAPES,
+     "Xform must have attributes"),
+    (pad("R1", 0, 0, 30).replace('<Location', '<Xform rotation="30"/><Location'), PAD_SHAPES,
+     "more than one Xform"),
+    (pad("R1", 0, 0).replace('<Location x="0" y="0"/>', ''), PAD_SHAPES, "Pad has no Location"),
+    (pad("R1", 0, 0).replace('<StandardPrimitiveRef id="R1"/>', '<UserPrimitiveRef id="R1"/>'), PAD_SHAPES,
+     "UserPrimitiveRef in Pad"),
+    (pad("R1", 0, 0).replace('padstackDefRef="P"', 'padstackDefRef="P" layer="x"'), PAD_SHAPES,
+     "Pad attributes"),
+    (pad("R1", 0, 0, pin=None), PAD_SHAPES, "component pad without a PinRef"),
+    (pad("R1", 0, 0).replace('pin="1"', ''), PAD_SHAPES, "PinRef must have attributes"),
+    (pad("RR", 0, 0), PAD_SHAPES.replace('lowerLeft="true"/>', 'lowerLeft="false"/>'), "some corners not rounded"),
+    (pad("CHAM", 0, 0), PAD_SHAPES.replace('upperLeft="true"/>', 'upperLeft="false"/>'), "must be 'true'"),
+    (pad("BF", 0, 0), PAD_SHAPES + '<EntryStandard id="BF"><Butterfly shape="ROUND" diameter="1"/></EntryStandard>',
+     "pad shape Butterfly is not supported"),
+    (pad("C1", 0, 0), PAD_SHAPES.replace('<Circle diameter="0.6"/>', '<Circle diameter="0.6"><FillDesc fillProperty="HOLLOW"/></Circle>'),
+     "no children"),
+    (pad("C1", 0, 0), PAD_SHAPES.replace('diameter="0.6"', 'diameter="0"'), "diameter 0.0 must be positive"),
+    (pad("RR", 0, 0), PAD_SHAPES.replace('radius="0.25"', 'radius="0.8"'), "corner radius"),
+    (pad("TRI", 0, 0), PAD_SHAPES.replace('<PolyStepSegment x="0.5" y="-0.75"/>',
+                                          '<PolyStepCurve x="0.5" y="-0.75" centerX="0" centerY="0" clockwise="true"/>'),
+     "curved"),
+])
+def test_unsupported_pads_raise_with_context(content, shapes, message):
+    with pytest.raises(ValueError, match=message) as error:
+        pads_of(f'<Set net="PWR">{content}</Set>', shapes)
+    assert "layer 'F.Cu'" in str(error.value) and "net 'PWR'" in str(error.value)
+
+
+def test_via_pad_with_pin_raises():
+    with pytest.raises(ValueError, match="via pad with a PinRef"):
+        pads_of(f'<Set net="PWR" padUsage="VIA">{pad("C1", 0, 0)}</Set>')
+
+
+@pytest.mark.parametrize("shapes,message", [
+    (PAD_SHAPES + '<EntryStandard id="C1"><Circle diameter="1"/></EntryStandard>', "duplicate dictionary id 'C1'"),
+    (PAD_SHAPES.replace('<Circle diameter="0.6"/>', '<Circle diameter="0.6"/><Circle diameter="1"/>'),
+     "EntryStandard 'C1' must hold exactly one shape"),
+])
+def test_broken_dictionary_raises_with_its_path(shapes, message):
+    with pytest.raises(ValueError, match="DictionaryStandard/EntryStandard.*" + message):
+        pads_of(f'<Set net="PWR">{pad("C1", 0, 0)}</Set>', shapes)
+
+
+def test_custom_pad_keeps_its_handedness():
+    # An L is asymmetric in every direction, unlike KiCad's triangle jumper pad, so a mirrored
+    # custom outline fails here. Pad frame (IPC, Y up): long leg along +x, short leg up +y.
+    ell = contour([(0, 0), (3, 0), (3, 1), (1, 1), (1, 2), (0, 2)])
+    shapes = PAD_SHAPES + f'<EntryStandard id="ELL">{ell}</EntryStandard>'
+    feature, = pads_of(f'<Set net="PWR">{pad("ELL", 10, -20)}</Set>', shapes)
+    # Metres reverse Y once: the long leg runs along +x at y = 0.020 .. 0.019, the short leg
+    # points to smaller y (KiCad's "up" on screen).
+    assert feature.geometry.contains(Point(0.0125, 0.0195))      # long leg
+    assert feature.geometry.contains(Point(0.0105, 0.0185))      # short leg, upwards on screen
+    assert not feature.geometry.contains(Point(0.0105, 0.0215))  # where a mirror would put it
+    assert not feature.geometry.contains(Point(0.0125, 0.0185))  # the L's empty corner
