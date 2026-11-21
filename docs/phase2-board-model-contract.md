@@ -51,6 +51,8 @@ Pin electrical type, thermal-relief hints and exporter version may be unknown;
 represent absence explicitly. Sources, loads, contact regions and material/
 plating assumptions remain separate setup data. Filled copper already carries
 thermal-spoke geometry; missing relief metadata must not erase those spokes.
+Confirmed on the public board in `tests/fixtures/thermal_relief` (KiCad 10.0.8):
+spokes and solid connections are part of the fill outline and overlap their pads.
 
 ## First implementation and stop boundary
 

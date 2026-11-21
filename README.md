@@ -242,7 +242,9 @@ copper on a net is never silently left out. KiCad's fractured fills are split
 back into outline and holes at their zero-width slits; any other unsupported or
 invalid geometry raises. Tracks are checked against KiCad's own board file on the
 public board in `tests/fixtures/arc_track`; pads and vias against KiCad's own SVG
-plot of the public board in `tests/fixtures/pad_shapes`.
+plot of the public board in `tests/fixtures/pad_shapes`; fills meeting pads
+(thermal spokes, solid connections, clearances) against KiCad's plot of the
+public board in `tests/fixtures/thermal_relief`.
 
 ## Phase 0 experiments
 
