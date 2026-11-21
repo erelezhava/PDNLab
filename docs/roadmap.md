@@ -5,7 +5,7 @@ measured results live in [DECISIONS.md](DECISIONS.md); the full plan, gates and
 estimates in [project-plan.md](project-plan.md). Update this file after each
 increment, in the same commit or pull request.
 
-Last updated: 2026-11-21, after board assembly was merged (PR #23).
+Last updated: 2026-11-21, after the hole cutting radius decision.
 
 ## Where we are
 
@@ -43,7 +43,7 @@ after release 0.1.
 | 6 | Drill holes: `DrillFeature` records linked to pad and via copper (`ipc2581_copper.py`) | Merged, PR #19; public pad board 5/5 and real board 218/218 holes match KiCad's file. Holes are recorded, not cut (cutting and barrels in 9 and 11) |
 | 7 | Thermal reliefs: public test board, fills meeting pads checked against KiCad's plot | Merged, PR #21; no reader change; public thermal board 12/12 pad and via connections and all fills match KiCad |
 | 8 | Assemble a full `BoardModel` from the readers (`ipc2581_board.py`, `PinPad` records) | Merged, PR #23; public boards 26/26 and private board 355/355 pins match KiCad's board file |
-| 9 | Copper cleanup per net and layer (union of fills, tracks, pads; holes cut at the setup's radius) | Next; needs the hole cutting radius decision first |
+| 9 | Copper cleanup per net and layer (union of fills, tracks, pads; plated holes cut at finished radius + setup plating) | Next |
 | 10 | Meshing real copper with Gmsh (start from experiment 8's settings) | Planned |
 | 11 | Via and pin contact model on real boards (rims and barrels, setup plating) | Planned |
 | 12 | Setup file: sources, loads, rails, material and plating | Planned |
@@ -66,11 +66,6 @@ decided when it starts.
 
 ## Open decisions
 
-- Hole cutting radius and plating thickness (setup file, cleanup and contact
-  model): whether KiCad's drill value is the drilled or the finished size, and
-  the plating, ideally from the fab's specification. Experiment 8 cut at drill
-  radius + plating with 25 µm plating; for a 0.2 mm via that choice visibly
-  changes edge current density.
 - Mesh sizes (meshing increment): start from experiment 8 (h = 0.5 mm, 96-sided
   holes, growth 0.15 mm per mm from holes and through-hole pads; refinement also
   needed on thermal spokes, as narrow as 0.3 mm on the thermal board) and settle
@@ -110,3 +105,7 @@ decided when it starts.
 - Board assembly: one `PinPad` per physical pad (one pin's copper at one
   position, all layers); component, pin and position from the copper reader;
   copper pads on non-plated holes raise for now; unread copper raises.
+- Holes: KiCad's hole value is the finished size (KLC F7.6, KiCad #7044); plated
+  holes are cut at finished radius + plating, the barrel added by the contact
+  model; plating thickness is a required setup input, no default; non-plated
+  holes cut at their radius.
