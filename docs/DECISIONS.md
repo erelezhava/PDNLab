@@ -2197,3 +2197,34 @@ Not run or not covered: copper pads on non-plated holes, pins with several pads
 and blind or buried pin holes on a real export (none on these boards); KiCad 11.
 
 Stopped after assembly: no union, hole cutting, meshing, setup, CLI or solve.
+
+## 2026-11-21 — Decision: hole cutting radius and plating thickness
+
+**Result / Recommendation: decided by Erekle (2026-11-21). KiCad's hole value
+is the finished hole size; holes are cut from plane copper at the drilled radius,
+finished radius plus plating; plating thickness is a required setup input with
+no default.**
+
+Evidence (web, 2026-11-21): the KiCad library conventions (KLC F7.6) state that
+hole sizes are the finished size after plating, not the drill size; the KLC
+change cites KiCad issue #7044, where KiCad itself was clarified the same way.
+Fabricators expect finished hole sizes and drill plated holes larger to allow
+for plating. The IPC-2581 `Hole@diameter` the drill reader records is the same
+KiCad value. KiCad's design-rules label "via drill" is misleading: the value is
+the finished hole.
+
+Decisions, with d the exported hole diameter and t the plating thickness:
+
+- The barrel is copper from radius d/2 (finished hole) to d/2 + t (drilled
+  wall). The cleanup increment cuts plane copper (pad, via, fill, track) at
+  radius d/2 + t; the contact model increment adds the barrel as that tube.
+  This is what experiment 8 did (with t = 25 µm), so increment 9 starts from a
+  tested choice.
+- t comes from the setup file, from the fabricator's specification. It is
+  required: a missing value raises with a message saying what is needed. There
+  is no default, because a silent default changes via resistance unnoticed (18
+  against 25 µm on a 0.2 mm via is about 35% more barrel resistance).
+- Non-plated holes are cut at d/2 (no plating).
+
+Not decided here: per-hole or per-size plating (one board-wide t for now),
+drill tolerances (KiCad writes none), and annular-ring checks.
