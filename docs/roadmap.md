@@ -5,15 +5,14 @@ measured results live in [DECISIONS.md](DECISIONS.md); the full plan, gates and
 estimates in [project-plan.md](project-plan.md). Update this file after each
 increment, in the same commit or pull request.
 
-Last updated: 2026-11-21, after the drill reader was checked against KiCad's
-board file on the public pad board and one real board.
+Last updated: 2026-11-21, after the drill reader was merged (PR #19).
 
 ## Where we are
 
-Phase 2 (real boards). Importer steps 1 to 5 are merged; step 6 (drill holes) is
-implemented and awaiting merge; the thermal-relief board is next. The solver
-core is accepted on synthetic cases; the IPC-2581 importer is being built one
-element type at a time. Nothing yet reads a full board, meshes it and solves it outside the
+Phase 2 (real boards). Importer steps 1 to 6 are merged: every kind of copper
+and hole in a KiCad 10 IPC-2581 export is read and checked against KiCad. The
+thermal-relief board is next. The solver core is accepted on synthetic cases.
+Nothing yet assembles a full board, meshes it and solves it outside the
 experiments.
 
 Committed scope is the MVP: a command-line DC drop solver for KiCad 10 boards,
@@ -41,7 +40,7 @@ after release 0.1.
 | 3 | Nets and filled-zone contours (now in `ipc2581_copper.py`) | Merged, PR #13; real export read: 141 nets, 11 fills, 183 holes |
 | 4 | Tracks, segments and arcs (`track_outline.py`, `ipc2581_copper.py`) | Merged, PR #16; public arc board 13/13 and real board 785/785 tracks match KiCad |
 | 5 | Pads and via copper (`pad_outline.py`, `ipc2581_copper.py`) | Merged, PR #18; public pad board 36/36 and real board 1,206/1,206 pad and via shapes match KiCad's plot |
-| 6 | Drill holes: `DrillFeature` records linked to pad and via copper (`ipc2581_copper.py`) | Branch `phase2-ipc2581-drills`; public pad board 5/5 and real board 218/218 holes match KiCad's file. Holes are recorded, not cut (cutting and barrels in 9 and 11) |
+| 6 | Drill holes: `DrillFeature` records linked to pad and via copper (`ipc2581_copper.py`) | Merged, PR #19; public pad board 5/5 and real board 218/218 holes match KiCad's file. Holes are recorded, not cut (cutting and barrels in 9 and 11) |
 | 7 | Thermal reliefs: public test board, fills meeting pads checked against KiCad's plot | Next (Erekle, 2026-11-21) |
 | 8 | Assemble a full `BoardModel` from the readers | Planned |
 | 9 | Copper cleanup per net and layer (union of fills, tracks, pads; holes cut at the setup's radius) | Planned |
