@@ -315,3 +315,30 @@ span and net, with via copper linked on all four layers, and every plated pin
 hole matches its pad's drill, plating and net and sits at its pad's centre.
 Spans other than `F.Cu` to `B.Cu` are tested with synthetic XML only (a blind
 via on a three-layer stack).
+
+## Board assembly (2026-11-21)
+
+`pdnlab_dc.ipc2581_board.read_ipc2581_board(path)` reads the file once and
+returns a `BoardModel`: layers and source from the metadata reader, nets,
+features (fills, tracks, pad and via copper) and drills from the copper reader,
+and `PinPad` records built here. The copper reader also returns `pad_pins`
+(feature ID, component, pin number, position in metres) for every component pad
+copper feature.
+
+A `PinPad` groups the pad copper of one component and pin at one position, one
+feature per copper layer in stackup order; ID `pin:<component>.<pin>`, then
+`#2`... for further pads of the same pin. Its net is its copper's net and its
+`drill_id` the hole its copper is linked to. Vias are not pin pads: their copper
+carries `drill_id` only. Electrical type stays `None`.
+
+Raises, with the pin named: unread copper in the copper reader's result; one
+pad's copper on different nets, or on more than one hole; a copper pad on a
+non-plated hole (not supported yet). `BoardModel` then checks the rest.
+Assumptions: the board scope first (holes not cut, no barrel, copper not
+merged), the copper reader's conventions, and the non-copper layers not
+inspected.
+
+Checked against KiCad's board file (`tests/test_ipc2581_board.py`): every pin of
+the three public fixture boards matches its KiCad pad in component, pad number,
+net, position and hole. Pads with no copper layer (paste-only apertures) and
+`np_thru_hole` pads are not pins.

@@ -217,8 +217,7 @@ layers, nets, copper features, physical pin pads and drill features. `BoardModel
 validates IDs, references, SI dimensions, polygon topology and layer/drill
 ordering. It does not parse XML, transform/repair geometry or infer electrical
 contacts. See the [development contract](docs/phase2-board-model-contract.md)
-and `tests/test_board.py` for synthetic examples. Production importing remains
-unimplemented.
+and `tests/test_board.py` for synthetic examples.
 
 `pdnlab_dc.ipc2581_metadata.read_ipc2581_metadata(path)` reads only the header
 and stackup of an IPC-2581 revision C file in millimetres: the input hash,
@@ -245,6 +244,12 @@ public board in `tests/fixtures/arc_track`; pads and vias against KiCad's own SV
 plot of the public board in `tests/fixtures/pad_shapes`; fills meeting pads
 (thermal spokes, solid connections, clearances) against KiCad's plot of the
 public board in `tests/fixtures/thermal_relief`.
+
+`pdnlab_dc.ipc2581_board.read_ipc2581_board(path)` assembles all of this into
+one `BoardModel`, adding a `PinPad` per physical component pad (its copper on each
+layer and its hole). Copper is not yet merged per net and layer, holes are not
+cut and nothing is meshed or solved from it. Every pin of the public boards is
+checked against KiCad's own board file.
 
 ## Phase 0 experiments
 
