@@ -14,6 +14,7 @@ independently of both the IPC-2581 exporter and this reader. Differences come on
 from curve approximation (ours 1 µm, the plot about 5 µm, its circles exact).
 """
 
+import math
 import re
 import xml.etree.ElementTree as ET
 from pathlib import Path
@@ -96,3 +97,61 @@ def test_asymmetric_pads_land_on_kicad_corners(mismatches):
     # or mirror moves the cut to another corner (about 3 % mismatch), so these must be tight.
     for fid in ("pad:F.Cu:R3.1", "pad:B.Cu:R4.1"):
         assert mismatches[fid][1] < 1e-3, fid
+
+
+# ---- Drill holes against the same board's .kicad_pcb ---------------------------------------
+def kicad_vias_and_pin_drills():
+    """Vias (position, drill, net, layers) and through-hole pad drills from the .kicad_pcb."""
+    text = (FIXTURE / "pad_shapes.kicad_pcb").read_text()
+    vias = []
+    for body in re.findall(r"\n\t\(via\n(.*?)\n\t\)", text, re.S):
+        x, y = (float(v) for v in re.search(r"\(at ([\d.-]+) ([\d.-]+)\)", body).groups())
+        vias.append({"at": (x, y), "drill": float(re.search(r"\(drill ([\d.]+)\)", body).group(1)),
+                     "net": re.search(r'\(net "([^"]*)"\)', body).group(1),
+                     "layers": tuple(re.search(r"\(layers ([^)]*)\)", body).group(1).replace('"', "").split())})
+    pins = []
+    for fp in re.split(r"\n\t\(footprint ", text)[1:]:
+        ref = re.search(r'\(property "Reference" "([^"]+)"', fp).group(1)
+        for pad in re.findall(r'\n\t\t\(pad "([^"]*)" (thru_hole|np_thru_hole) .*?\n\t\t\)', fp, re.S):
+            body = re.search(rf'\n\t\t\(pad "{re.escape(pad[0])}" {pad[1]} (.*?)\n\t\t\)', fp, re.S).group(1)
+            pins.append({"pin": f"{ref}.{pad[0]}", "kind": pad[1],
+                         "drill": float(re.search(r"\(drill ([\d.]+)\)", body).group(1)),
+                         "net": (re.search(r'\(net "([^"]*)"\)', body) or [None, None])[1]})
+    return vias, pins
+
+
+def test_every_via_hole_matches_kicad_exactly():
+    copper = read_ipc2581_copper(FIXTURE / "pad_shapes.xml")
+    vias, _ = kicad_vias_and_pin_drills()
+    drills = [d for d in copper.drills if d.kind == "via"]
+    assert len(vias) == len(drills) == 3
+    for via in vias:
+        # KiCad's frame is Y down in millimetres; ours is Y down (reversed once) in metres.
+        hit = [d for d in drills if math.dist(d.position_m, (via["at"][0] * 1e-3, via["at"][1] * 1e-3)) < 1e-9]
+        assert len(hit) == 1, via
+        d = hit[0]
+        assert d.diameter_m == pytest.approx(via["drill"] * 1e-3, abs=1e-12)
+        assert (d.plating, d.start_layer_id, d.end_layer_id) == ("plated",) + via["layers"]
+        linked = [p for p in copper.pads if p.drill_id == d.id]
+        assert sorted(p.layer_id for p in linked) == ["B.Cu", "F.Cu", "In1.Cu", "In2.Cu"]
+        assert {p.kind for p in linked} == {"via"} and {p.net_id for p in linked} == {via["net"]}
+
+
+def test_every_pin_hole_matches_kicad_and_sits_at_its_pad_centre():
+    copper = read_ipc2581_copper(FIXTURE / "pad_shapes.xml")
+    _, pins = kicad_vias_and_pin_drills()
+    drills = {d.id: d for d in copper.drills if d.kind == "pin"}
+    assert len(pins) == len(drills) == 2 and all(p["kind"] == "thru_hole" for p in pins)
+    for pin in pins:
+        linked = [p for p in copper.pads if p.id.endswith(f":{pin['pin']}")]
+        assert sorted(p.layer_id for p in linked) == ["B.Cu", "F.Cu", "In1.Cu", "In2.Cu"]
+        assert len({p.drill_id for p in linked}) == 1 and linked[0].drill_id in drills
+        d = drills[linked[0].drill_id]
+        assert d.diameter_m == pytest.approx(pin["drill"] * 1e-3, abs=1e-12)
+        assert (d.plating, d.start_layer_id, d.end_layer_id) == ("plated", "F.Cu", "B.Cu")
+        assert {p.net_id for p in linked} == {pin["net"]}
+        # The pad shapes are checked against KiCad's plot above; the hole is at their centre.
+        for p in linked:
+            assert math.dist(p.geometry.centroid.coords[0], d.position_m) < 1e-9
+    # No other pad or via on the board claims a hole.
+    assert {p.drill_id for p in copper.pads} - {None} == {d.id for d in copper.drills}

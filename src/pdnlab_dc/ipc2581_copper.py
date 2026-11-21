@@ -1,4 +1,4 @@
-"""IPC-2581 nets, zone fills, tracks, pads and vias. This is not yet a board importer.
+"""IPC-2581 nets, zone fills, tracks, pads, vias and drills. Not yet a board importer.
 
 Builds on ipc2581_metadata (header, units, stackup, provenance) and adds:
 * Net records: every distinct Set ``net`` attribute in the Step. KiCad 10 writes no
@@ -15,7 +15,14 @@ Builds on ipc2581_metadata (header, units, stackup, provenance) and adds:
   (``via:<layer>:<k>``): each Pad on a copper layer, its DictionaryStandard shape
   (Circle, RectCenter, Oval, RectRound, RectCham or a Contour for custom and
   trapezoid pads) turned counter-clockwise by its Xform rotation about its Location.
-  Outlines are solid: drill holes and barrels belong to the drills increment.
+  Outlines are solid: holes are not cut from them.
+* DrillFeature records: each Hole in a layerFunction="DRILL" layer, its span from the
+  layer's Span, kind via (VIA), pin (PLATED) or mechanical (NONPLATED), ID
+  ``drill:<hole name>``. The pad and via copper of the same padstack and net at
+  exactly the hole's position, on each layer of the span, gets ``drill_id``. A span
+  does not by itself mean contact; holes are cut and barrels modelled later, with the
+  setup's finished-hole size and plating (Phase 2 contract). Slots (ROUT layers),
+  backdrills and hole tolerances raise.
 
 ``unread`` counts copper a later increment will read; KiCad boards leave it empty
 now. Copper that no planned increment reads raises instead, so copper on
@@ -49,16 +56,17 @@ from pathlib import Path
 from shapely.geometry import Polygon
 from shapely.validation import explain_validity
 
-from pdnlab_dc.board import BoardModel, CopperFeature, CopperLayer, Net, SourceInfo
+from pdnlab_dc.board import (BoardModel, CopperFeature, CopperLayer, DrillFeature, Net,
+                             SourceInfo)
 from pdnlab_dc.ipc2581_metadata import (_DECIMAL, CONVENTIONS, NAMESPACE, _q,
                                         parse_ipc2581_tree)
 from pdnlab_dc.pad_outline import (chamfer_outline, circle_outline, oval_outline, place,
                                   rect_outline, roundrect_outline)
 from pdnlab_dc.track_outline import arc_outline, segment_outline
 
-SCOPE = ("Nets, filled-zone contours, tracks, pads and vias on copper layers. Drills were "
-         "not read: pad and via outlines are solid, without holes or barrels (see "
-         "uninspected_layers). This is not a complete board.")
+SCOPE = ("Nets, filled-zone contours, tracks, pads, vias and drill holes. Pad and via "
+         "outlines are solid: holes are recorded as DrillFeature and linked by drill_id, not "
+         "cut, and no barrel or plating is modelled. This is not a complete board.")
 ASSUMPTIONS = (
     SCOPE,
     "xy_transform (source mm to stored m, IPC Y reversed once) was applied once, to fill, "
@@ -74,6 +82,8 @@ ASSUMPTIONS = (
     "rotation about its Location; round parts use the same 1 µm rule. Per-layer padstacks, "
     "pad offsets and rounded chamfered pads are not exported faithfully by KiCad 10 and are "
     "not detectable here.",
+    "Drill diameters are the exported drill values; finished-hole size and plating "
+    "thickness are setup assumptions, applied when holes are cut and barrels modelled.",
 ) + CONVENTIONS
 
 # Set geometryUsage values: copper no planned increment reads, so they raise.
@@ -104,6 +114,7 @@ class Ipc2581Copper:
     fills: tuple[CopperFeature, ...]
     tracks: tuple[CopperFeature, ...]
     pads: tuple[CopperFeature, ...]
+    drills: tuple[DrillFeature, ...]
     unread: tuple[UnreadCount, ...]
     uninspected_layers: tuple[str, ...]
     scope: str = SCOPE
@@ -238,13 +249,15 @@ def _attributes(element, required, optional=(), context=""):
 
 
 class _CopperLayerReader:
-    def __init__(self, layer, transform, fills, tracks, pads, shapes, unread):
+    def __init__(self, layer, transform, fills, tracks, pads, shapes, unread, pad_index):
         self.layer, self.fills, self.unread = layer, fills, unread
         self.transform = [Decimal(repr(v)) for v in transform]
         self.index = 0
         self.tracks, self.track_index = tracks, 0
         self.pads, self.shapes, self.via_index, self.pad_ids = pads, shapes, 0, Counter()
         self.local_shapes = {}   # dictionary id -> outline in the pad frame (source units)
+        # (layer, padstackDefRef, net, exact x, exact y) -> indices into pads, for drills.
+        self.pad_index = pad_index
         self.matrix = tuple(float(v) for v in transform)
         # The chord tolerance in source units: 1 µm divided by the source-to-metre scale.
         self.track_tol = TRACK_TOL_M / abs(self.matrix[0])
@@ -384,6 +397,9 @@ class _CopperLayerReader:
             self.pad_ids[base] += 1
             feature_id = base if self.pad_ids[base] == 1 else f"{base}#{self.pad_ids[base]}"
             kind = "pad"
+        exact = tuple(_number(parts["Location"].get(k), context) for k in ("x", "y"))
+        self.pad_index.setdefault((self.layer, element.get("padstackDefRef"), net) + exact,
+                                  []).append(len(self.pads))
         self.pads.append(CopperFeature(feature_id, net, self.layer, kind, polygon,
                                        source_ref=ref))
 
@@ -495,6 +511,76 @@ def _shape_dictionary(root):
     return shapes
 
 
+_HOLE_KINDS = {"VIA": ("via", "plated"), "PLATED": ("pin", "plated"),
+               "NONPLATED": ("mechanical", "nonplated")}
+_HOLE_ATTRIBUTES = ("name", "diameter", "platingStatus", "plusTol", "minusTol", "x", "y")
+
+
+def _read_drills(feature, layer_element, ref, copper, transform, pads, pad_index):
+    """DrillFeature records of one DRILL LayerFeature, and drill_id set on matching pads.
+
+    A hole belongs to the pad or via copper of the same padstack and net at exactly its
+    position, on each copper layer of the drill layer's span. Holes are not cut from that
+    copper here: the finished hole size is a setup value (see the module docstring).
+    """
+    spans = layer_element.findall(_q("Span"))
+    if len(spans) != 1 or set(spans[0].attrib) != {"fromLayer", "toLayer"}:
+        raise ValueError(f"{ref}: drill layer must have one Span with fromLayer and toLayer")
+    start, end = spans[0].get("fromLayer"), spans[0].get("toLayer")
+    if start not in copper or end not in copper or copper.index(start) > copper.index(end):
+        raise ValueError(f"{ref}: drill span {start!r} to {end!r} is not an ordered pair of "
+                         "copper layers")
+    span = copper[copper.index(start):copper.index(end) + 1]
+    a, b, tx, c, d, ty = (Decimal(repr(v)) for v in transform)
+    if b or c or abs(a) != abs(d):
+        raise ValueError("drill diameters need a transform without rotation or shear")
+    drills = []
+    for group, tag, group_ref in _children(feature, ref):
+        if tag != "Set":
+            raise ValueError(f"{group_ref}: {tag} in a drill LayerFeature is not supported")
+        net = group.get("net")
+        context = f"drill layer {feature.get('layerRef')!r}, " + (
+            f"net {net!r}" if net is not None else "no net") + f" ({group_ref})"
+        if set(group.attrib) - {"geometry", "net"}:
+            raise ValueError(f"{context}: Set attributes {sorted(group.attrib)} are not supported")
+        holes = list(_children(group, group_ref))
+        if len(holes) != 1 or holes[0][1] != "Hole":
+            raise ValueError(f"{context}: drill Set must hold exactly one Hole, found "
+                             f"{[t for _, t, _ in holes]} (slots and backdrills are not supported)")
+        hole, _, hole_ref = holes[0]
+        context = context.replace(group_ref, hole_ref)
+        _attributes(hole, _HOLE_ATTRIBUTES, (), context)
+        status = hole.get("platingStatus")
+        if status not in _HOLE_KINDS:
+            raise ValueError(f"{context}: platingStatus {status!r} is not supported")
+        for tolerance in ("plusTol", "minusTol"):
+            if _number(hole.get(tolerance), context) != 0:
+                raise ValueError(f"{context}: nonzero {tolerance} is not supported")
+        x, y = (_number(hole.get(k), context) for k in ("x", "y"))
+        diameter = _number(hole.get("diameter"), context)
+        kind, plating = _HOLE_KINDS[status]
+        drill_id = f"drill:{hole.get('name')}"
+        drills.append(DrillFeature(drill_id, (float(a*x + b*y + tx), float(c*x + d*y + ty)),
+                                   float(diameter * abs(a)), plating, start, end, kind))
+        linked = 0
+        for layer in span:
+            matches = pad_index.get((layer, group.get("geometry"), net, x, y), [])
+            if len(matches) > 1:
+                raise ValueError(f"{context}: {len(matches)} pads on {layer!r} share this hole")
+            for i in matches:
+                pad = pads[i]
+                if pad.drill_id is not None:
+                    raise ValueError(f"{context}: pad {pad.id} already has drill {pad.drill_id}")
+                if (pad.kind == "via") != (kind == "via"):
+                    raise ValueError(f"{context}: {status} hole at {pad.kind} {pad.id}")
+                pads[i] = replace(pad, drill_id=drill_id)
+                linked += 1
+        if plating == "plated" and not linked:
+            raise ValueError(f"{context}: plated hole with no pad or via copper on any layer of "
+                             f"its span {span}")
+    return drills
+
+
 def parse_ipc2581_copper(data):
     """Nets and zone-fill features from the bytes of an IPC-2581 C file (see module doc)."""
     root, meta = parse_ipc2581_tree(data)
@@ -506,10 +592,12 @@ def parse_ipc2581_copper(data):
         if steps[0].find(_q(tag)) is not None:
             raise ValueError(f"Step contains {tag}: this reader takes nets from Set net "
                              "attributes only and does not read net lists")
-    defined = {layer.get("name") for layer in cad.findall(_q("Layer"))}
+    layer_elements = {layer.get("name"): layer for layer in cad.findall(_q("Layer"))}
+    defined = set(layer_elements)
     copper = [layer.id for layer in meta.copper_layers]
     nets, fills, tracks, pads, unread, seen, uninspected = set(), [], [], [], Counter(), set(), []
     shapes = _shape_dictionary(root)
+    pad_index, drill_features = {}, []
     for feature, tag, _ in _children(steps[0], "Step"):
         if tag != "LayerFeature":
             continue
@@ -526,26 +614,37 @@ def parse_ipc2581_copper(data):
                 raise ValueError(f"{ref}: Set with a blank net name")
             nets.add(name)
         nets.discard(None)
+        function = layer_elements[layer].get("layerFunction")
+        if function == "DRILL":
+            drill_features.append((feature, ref))   # read once all pads are known
+            continue
+        if function == "ROUT" and len(feature):
+            raise ValueError(f"{ref}: routed slots are not supported")
         if layer not in copper:
             uninspected.append(layer)
             continue
         reader = _CopperLayerReader(layer, meta.source.xy_transform, fills, tracks, pads, shapes,
-                                    unread)
+                                    unread, pad_index)
         for child, child_tag, child_ref in _children(feature, ref):
             if child_tag != "Set":
                 raise ValueError(f"{child_ref}: {child_tag} in a copper LayerFeature is not "
                                  "supported")
             reader.set(child, child_ref)
+    drills = []
+    for feature, ref in drill_features:
+        drills += _read_drills(feature, layer_elements[feature.get("layerRef")], ref, copper,
+                               meta.source.xy_transform, pads, pad_index)
     source = replace(meta.source, assumptions=ASSUMPTIONS)
     net_records = tuple(Net(name, name) for name in sorted(nets))
     # Reuse the model's reference checks (unique IDs, known layers and nets); not returned.
-    BoardModel(source, meta.copper_layers, net_records, tuple(fills) + tuple(tracks) + tuple(pads))
+    BoardModel(source, meta.copper_layers, net_records, tuple(fills) + tuple(tracks) + tuple(pads),
+               drills=tuple(drills))
     order = {layer: i for i, layer in enumerate(copper)}
     counts = tuple(UnreadCount(kind, layer, net, n) for (layer, kind, net), n in
                    sorted(unread.items(), key=lambda item: (order[item[0][0]], item[0][1],
                                                             item[0][2] or "")))
     return Ipc2581Copper(source, meta.copper_layers, net_records, tuple(fills), tuple(tracks),
-                         tuple(pads), counts, tuple(uninspected))
+                         tuple(pads), tuple(drills), counts, tuple(uninspected))
 
 
 def read_ipc2581_copper(path):
