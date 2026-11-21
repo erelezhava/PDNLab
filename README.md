@@ -233,8 +233,10 @@ from the export's `Set` net names; one `CopperFeature` of kind `fill` per zone
 contour in metres with its holes; one of kind `track` per straight or arc track,
 outlined with round ends at a 1 µm chord error (`pdnlab_dc.track_outline`);
 one of kind `pad` per component pad and `via` per via on every copper layer, as
-solid outlines from the export's shape dictionary (`pdnlab_dc.pad_outline`; drill
-holes are not cut yet); and the non-copper layers it did not inspect. Any other
+solid outlines from the export's shape dictionary (`pdnlab_dc.pad_outline`); one
+`DrillFeature` per drill hole, linked to its pad and via copper by `drill_id`
+but not cut out of it (the finished-hole size is a setup value); and the
+non-copper layers it did not inspect. Any other
 copper (teardrops, copper text and graphics, footprint-owned zones) raises, so
 copper on a net is never silently left out. KiCad's fractured fills are split
 back into outline and holes at their zero-width slits; any other unsupported or

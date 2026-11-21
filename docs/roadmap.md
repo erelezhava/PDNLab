@@ -5,15 +5,15 @@ measured results live in [DECISIONS.md](DECISIONS.md); the full plan, gates and
 estimates in [project-plan.md](project-plan.md). Update this file after each
 increment, in the same commit or pull request.
 
-Last updated: 2026-11-21, after the pad and via reader was checked against
-KiCad's own plot on the public pad board and one real board.
+Last updated: 2026-11-21, after the drill reader was checked against KiCad's
+board file on the public pad board and one real board.
 
 ## Where we are
 
-Phase 2 (real boards). Importer steps 1 to 4 are merged; step 5 (pads and via
-copper) is implemented and awaiting merge; drills are next. The solver core is accepted
-on synthetic cases; the IPC-2581 importer is being built one element type at a
-time. Nothing yet reads a full board, meshes it and solves it outside the
+Phase 2 (real boards). Importer steps 1 to 5 are merged; step 6 (drill holes) is
+implemented and awaiting merge; the thermal-relief board is next. The solver
+core is accepted on synthetic cases; the IPC-2581 importer is being built one
+element type at a time. Nothing yet reads a full board, meshes it and solves it outside the
 experiments.
 
 Committed scope is the MVP: a command-line DC drop solver for KiCad 10 boards,
@@ -40,13 +40,13 @@ after release 0.1.
 | 2 | IPC-2581 header and stackup metadata (`ipc2581_metadata.py`) | Merged, PR #11; read on one real KiCad 10 export (logged, PR #12) |
 | 3 | Nets and filled-zone contours (now in `ipc2581_copper.py`) | Merged, PR #13; real export read: 141 nets, 11 fills, 183 holes |
 | 4 | Tracks, segments and arcs (`track_outline.py`, `ipc2581_copper.py`) | Merged, PR #16; public arc board 13/13 and real board 785/785 tracks match KiCad |
-| 5 | Pads and via copper (`pad_outline.py`, `ipc2581_copper.py`) | Branch `phase2-ipc2581-pads`; public pad board 36/36 and real board 1,206/1,206 pad and via shapes match KiCad's plot |
-| 6 | Drills: holes cut from pads and vias, plated barrels joining layers | Next |
-| 7 | Thermal reliefs: public test board, fills meeting pads checked against KiCad's plot | Planned (Erekle, 2026-11-21) |
+| 5 | Pads and via copper (`pad_outline.py`, `ipc2581_copper.py`) | Merged, PR #18; public pad board 36/36 and real board 1,206/1,206 pad and via shapes match KiCad's plot |
+| 6 | Drill holes: `DrillFeature` records linked to pad and via copper (`ipc2581_copper.py`) | Branch `phase2-ipc2581-drills`; public pad board 5/5 and real board 218/218 holes match KiCad's file. Holes are recorded, not cut (cutting and barrels in 9 and 11) |
+| 7 | Thermal reliefs: public test board, fills meeting pads checked against KiCad's plot | Next (Erekle, 2026-11-21) |
 | 8 | Assemble a full `BoardModel` from the readers | Planned |
-| 9 | Copper cleanup per net and layer (union of fills, tracks, pads) | Planned |
-| 10 | Meshing real copper with Gmsh | Planned |
-| 11 | Via and pin contact model on real boards | Planned |
+| 9 | Copper cleanup per net and layer (union of fills, tracks, pads; holes cut at the setup's radius) | Planned |
+| 10 | Meshing real copper with Gmsh (start from experiment 8's settings) | Planned |
+| 11 | Via and pin contact model on real boards (rims and barrels, setup plating) | Planned |
 | 12 | Setup file: sources, loads, rails, material and plating | Planned |
 | 13 | Solve, VTU output for ParaView, CLI | Planned |
 | 14 | Release 0.1 gate run on the real test board | Planned |
@@ -67,8 +67,14 @@ decided when it starts.
 
 ## Open decisions
 
-- Drills: decided when that increment starts (hole shapes, plating, how a barrel
-  joins layers).
+- Hole cutting radius and plating thickness (setup file, cleanup and contact
+  model): whether KiCad's drill value is the drilled or the finished size, and
+  the plating, ideally from the fab's specification. Experiment 8 cut at drill
+  radius + plating with 25 µm plating; for a 0.2 mm via that choice visibly
+  changes edge current density.
+- Mesh sizes (meshing increment): start from experiment 8 (h = 0.5 mm, 96-sided
+  holes, growth 0.15 mm per mm from holes and through-hole pads; refinement also
+  needed on thermal spokes) and settle by release gate 5.
 - Custom pads: whether KiCad writes their outline with Y already flipped is
   accepted from KiCad's source, not yet shown on an export with an asymmetric
   custom pad. Revisit if a real board uses custom pads (the test board has none).
@@ -92,3 +98,7 @@ decided when it starts.
   against KiCad's plot); component pads and vias read as solid outlines on every
   copper layer, holes cut later; IDs `pad:<layer>:<component>.<pin>` and
   `via:<layer>:<k>`; three KiCad exporter limits documented, not detectable.
+- Drills: one `DrillFeature` per hole (`drill:<name>`, kind via, pin or
+  mechanical, span from the drill layer), linked by `drill_id` to the pad and
+  via copper of the same padstack and net at exactly its position on each span
+  layer; recorded, not cut; slots, backdrills and tolerances raise.

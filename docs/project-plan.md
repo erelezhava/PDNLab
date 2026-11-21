@@ -333,12 +333,14 @@ result-log entry and synthetic tests; none of them yet produces a complete
 4. Tracks, segments and arcs (`pdnlab_dc.track_outline`; the reader is renamed
    `pdnlab_dc.ipc2581_copper`). Merged (PR #16); checked against KiCad's board
    file on the public arc board and one real board.
-5. Pads and via copper (`pdnlab_dc.pad_outline`). Implemented on branch
-   `phase2-ipc2581-pads`; checked against KiCad's own SVG plot on the public pad
-   board and one real board.
-6. Planned, each separate: drills (holes and plated barrels), then a public
-   thermal-relief board. Cleanup, meshing, setup files, CLI and real-board
-   solves come after.
+5. Pads and via copper (`pdnlab_dc.pad_outline`). Merged (PR #18); checked
+   against KiCad's own SVG plot on the public pad board and one real board.
+6. Drill holes as `DrillFeature` records linked to pad and via copper.
+   Implemented on branch `phase2-ipc2581-drills`; checked against KiCad's board
+   file on the public pad board and one real board. Holes are not cut here.
+7. Planned, each separate: a public thermal-relief board, then assembly,
+   cleanup (holes cut at the setup's radius), meshing, contact model, setup
+   files, CLI and real-board solves.
 
 ### Phase 0 experiments
 
