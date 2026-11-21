@@ -1974,3 +1974,92 @@ KiCad output and keep its trailing spaces.
 
 Stopped after pads and via copper: no drill holes, barrels, union, meshing,
 setup, CLI or solve.
+
+## 2026-11-21 — Phase 2 small task: IPC-2581 drill holes
+
+**Result / Recommendation: drill holes are read. Each IPC-2581 `Hole` becomes a
+`DrillFeature` (kind via, pin or mechanical, span from its drill layer), linked
+by `drill_id` to the pad and via copper it passes through; holes are recorded,
+not cut. All 5 holes of the public pad board and all 218 of Erekle's private
+test board match KiCad's board file in position, drill size, span, plating and
+net. Cloud workspace: 127 focused tests pass; full suite 617 passed, 4 skipped
+on Python 3.11.18, 3.13.18 and 3.14.6; Erekle's machine 621 passed.
+Recommendation: merge, then the thermal-relief board.**
+
+Worked step by step with Erekle. Decisions by Erekle (2026-11-21):
+
+- One `DrillFeature` per `Hole`, ID `drill:<hole name>`; `VIA` → via, `PLATED` →
+  pin, `NONPLATED` → mechanical; span from the drill layer's `Span`.
+- A hole links to the pad and via copper of the same padstack and net at
+  exactly its position, on each layer of its span. More than one candidate on a
+  layer raises; a plated hole with no copper anywhere raises; a non-plated hole
+  without copper, and a span layer without copper, are allowed.
+- Holes are not cut from pad and via copper in the importer. Cutting uses the
+  finished-hole size from the setup file, in the cleanup increment, as the
+  Phase 2 contract requires. The exported diameter is KiCad's drill value.
+- Plating thickness and barrels are not the importer's: setup values, modelled
+  by the contact model increment with Phase 1's barrel model.
+- Slots (`SlotCavity` in a `ROUT` layer), backdrill references and nonzero hole
+  tolerances raise. Other spans are read generically.
+
+Raised by Erekle, deferred to later increments: mesh sizes around holes, and the
+radius at which holes are cut. Recorded starting points from experiment 8 (this
+log, 2026-11-15): h = 0.5 mm, via holes as 96-sided polygons, element size
+growing 0.15 mm per mm from holes and from through-hole pads; without local
+refinement results were up to 1.9% low, from 0.5 mm thermal spokes covered by one
+or two elements; between refined levels the largest drop changed by at most
+0.37%. Experiment 8 cut holes at drill radius + 25 µm plating; whether that or
+the drill radius is right depends on whether KiCad's drill value is the drilled
+or the finished size, to be settled for the setup file, ideally from the fab.
+
+Evidence, in the order it was gathered:
+
+1. Existing board model (Phase 2 increment 1): `DrillFeature` with position,
+   diameter, plating, start and end layer and kind; `CopperFeature.drill_id`; the
+   contract rules that a span does not by itself mean contact and that
+   finished-hole size and plating are setup assumptions.
+2. One via and one through-hole pad of `tests/fixtures/pad_shapes`. KiCad: via
+   at (137.29, 100.5), drill 0.3, layers F.Cu–B.Cu; J1 pad 1 drill 1.0. Export:
+   drill layer `F.Cu_B.Cu` with `Span`; `Hole H1 diameter="0.30"
+   platingStatus="VIA"` at (137.290, −100.50) in a `Set geometry="PADSTACK_9"`;
+   `Hole H4 diameter="1.0" platingStatus="PLATED"` at J1 pad 1's exact
+   `Location`, same padstack and net. No element names the pad of a hole.
+3. KiCad 10.0.8 exporter source: drill layers per via span, pad holes always
+   F.Cu–B.Cu, oblong holes to a `ROUT` slot layer as `SlotCavity`, backdrill
+   references added to holes, tolerances written as 0.0.
+4. Inventory of the private board (scratch script, counts pasted): 203 through
+   vias (68 × 0.2, 91 × 0.3, 44 × 0.35 mm), 13 plated pin holes of 1.0 mm, 2
+   non-plated holes of 2.6 mm; the export has the same 218 holes, all in
+   `F.Cu_B.Cu`; no blind or buried vias, slots, backdrills or hole offsets; 216
+   holes meet exactly one pad on each of the four layers, the 2 non-plated ones
+   none.
+5. Public pad board against its `.kicad_pcb` (`tests/test_pad_shapes_fixture.py`,
+   2 new tests): each of the 3 vias matches a KiCad via within 1 nm, drill 0.3
+   mm, span, net, with via copper linked on all four layers; each of the 2 pin
+   holes matches its pad's drill, plating and net and lies at its pads' centre
+   on all four layers.
+6. Private board, same checks (scratch script `check_real_drills.py`, not
+   committed; output pasted): 203 KiCad vias against 203 via drills, no
+   problems; 13 plated pin holes against 13 pin drills, no problems; 2
+   non-plated holes as 2 mechanical drills; 216 pads and vias linked on each of
+   the four copper layers.
+
+Tests: `tests/test_ipc2581_copper.py` now 122 (22 new: positions, diameters and
+spans; via and pin linking; non-plated holes with and without copper; a blind via
+on a three-copper-layer stack that must not claim copper on B.Cu; 14 hole and
+link rejections; 3 span rejections; the slot layer). The synthetic test board's
+drill layer, written before drills were read, was made realistic (tolerances,
+a via hole under its via pads, a separate non-plated hole). Deliberate one-line
+bugs, run with `PYTHONDONTWRITEBYTECODE=1`, each made tests fail: hole Y not
+reversed (1), diameter left in mm (1), vias read as pins (16), span start and end
+swapped (17), span ignored (1, the blind-via test), net left out of matching
+(1), ambiguity unchecked (1), plated holes without copper allowed (3), tolerances
+ignored (1), drill layers skipped (22). Against the pad-board test alone: hole Y
+not reversed, diameter in mm, pads never linked, vias read as pins (2 each).
+
+Not run or not covered: real exports with blind or buried vias, slots or
+backdrills (none on either board); hole cutting, barrels and plating (later
+increments); KiCad 11.
+
+Stopped after reading and linking holes: no cutting, barrels, union, meshing,
+setup, CLI or solve.

@@ -88,7 +88,11 @@ GRAPHIC_SETS = [
 ]
 B_CU = (f'<Set net="GND">{special(contour(OUTER, CUTOUT), contour(FRACTURED))}</Set>'
         f'<Set net="PWR" padUsage="VIA">{special(LINE)}{VIA_PAD}</Set>')
-DRILL = ('<Set geometry="V" net="SIG"><Hole name="H1" diameter="0.3" platingStatus="VIA" x="25" y="-2"/></Set>')
+# H1: the via hole under the PWR via pads at (25, -2) on F.Cu and B.Cu. H2: a non-plated
+# hole with no copper, the only place net SIG appears.
+TOLS = 'plusTol="0.0" minusTol="0.0"'
+DRILL = (f'<Set geometry="V" net="PWR"><Hole name="H1" diameter="0.30" platingStatus="VIA" {TOLS} x="25" y="-2"/></Set>'
+         f'<Set geometry="M" net="SIG"><Hole name="H2" diameter="2.6" platingStatus="NONPLATED" {TOLS} x="40" y="-8"/></Set>')
 
 
 def layer_feature(layer, content):
@@ -184,7 +188,7 @@ def test_feature_ids_and_source_references_are_stable_and_traceable():
 def test_unread_copper_is_counted_not_read_and_other_layers_are_listed():
     result = parse_ipc2581_copper(export())
     assert result.unread == ()   # pads and vias are read since the pad increment
-    assert result.uninspected_layers == ("F.Cu_B.Cu",)
+    assert result.uninspected_layers == ()   # the drill layer is read since the drills increment
     assert len(result.fills) == 4
 
 
@@ -202,8 +206,10 @@ def test_result_is_scoped_and_not_a_board_model():
     meta = parse_ipc2581_metadata(data)
     assert isinstance(result, Ipc2581Copper) and not isinstance(result, BoardModel)
     assert {f.name for f in fields(result)} == {"source", "copper_layers", "nets", "fills", "tracks",
-                                                "pads", "unread", "uninspected_layers", "scope"}
-    assert result.scope == SCOPE and "not read" in SCOPE and "not a complete board" in SCOPE
+                                                "pads", "drills", "unread", "uninspected_layers",
+                                                "scope"}
+    assert result.scope == SCOPE and "not a complete board" in SCOPE
+    assert "not cut" in SCOPE and "no barrel" in SCOPE   # what the result still leaves out
     assert result.source.assumptions[0] == SCOPE
     assert any("applied once" in a for a in result.source.assumptions)
     assert not any("has not been applied" in a for a in result.source.assumptions)
@@ -215,7 +221,8 @@ def test_result_is_scoped_and_not_a_board_model():
 
 
 def test_copper_layer_without_features_and_board_without_fills():
-    result = parse_ipc2581_copper(export(f_cu=f'<Set net="PWR">{PIN_PAD}</Set>', b_cu=""))
+    no_via_hole = DRILL[DRILL.index('<Set geometry="M"'):]   # keep only the non-plated H2
+    result = parse_ipc2581_copper(export(f_cu=f'<Set net="PWR">{PIN_PAD}</Set>', b_cu="", drill=no_via_hole))
     assert result.fills == () and [n.id for n in result.nets] == ["PWR", "SIG"]
     step = '<Step name="board"></Step>'
     result = parse_ipc2581_copper(export(step=step))
@@ -345,7 +352,8 @@ QUARTER = arc(33, -10, 30, -7, 30, -10)   # IPC: from angle 0 to 90 degrees, cou
 
 
 def tracks_of(content, net='net="PWR"'):
-    return parse_ipc2581_copper(export(f_cu=f"<Set {net}>{special(content)}</Set>", b_cu="")).tracks
+    return parse_ipc2581_copper(export(f_cu=f"<Set {net}>{special(content)}</Set>", b_cu="",
+                                       drill="")).tracks
 
 
 def test_track_vertices_are_the_outline_transformed_exactly_once():
@@ -449,7 +457,7 @@ def pad(shape, x, y, rotation=None, pin=("U1", "1")):
 
 
 def pads_of(content, shapes=PAD_SHAPES):
-    return parse_ipc2581_copper(export(f_cu=content, b_cu="", shapes=shapes)).pads
+    return parse_ipc2581_copper(export(f_cu=content, b_cu="", drill="", shapes=shapes)).pads
 
 
 def test_pads_and_vias_are_read_on_every_layer_with_ids_and_kinds():
@@ -564,3 +572,119 @@ def test_custom_pad_keeps_its_handedness():
     assert feature.geometry.contains(Point(0.0105, 0.0185))      # short leg, upwards on screen
     assert not feature.geometry.contains(Point(0.0105, 0.0215))  # where a mirror would put it
     assert not feature.geometry.contains(Point(0.0125, 0.0185))  # the L's empty corner
+
+
+# ---- Drills -------------------------------------------------------------------------------
+def hole(name, x, y, status="PLATED", diameter="1.0", padstack="P", net="PWR"):
+    net_attr = f' net="{net}"' if net else ""
+    return (f'<Set geometry="{padstack}"{net_attr}><Hole name="{name}" diameter="{diameter}" '
+            f'platingStatus="{status}" {TOLS} x="{x}" y="{y}"/></Set>')
+
+
+def test_drills_in_metres_with_kind_span_and_links_to_via_copper():
+    result = parse_ipc2581_copper(export())
+    h1, h2 = result.drills
+    assert (h1.id, h1.kind, h1.plating, h1.start_layer_id, h1.end_layer_id) == \
+        ("drill:H1", "via", "plated", "F.Cu", "B.Cu")
+    assert h1.position_m == pytest.approx((0.025, 0.002), abs=1e-15)    # IPC (25, -2), Y reversed
+    assert h1.diameter_m == pytest.approx(0.0003, abs=1e-18)
+    assert (h2.id, h2.kind, h2.plating, h2.diameter_m) == ("drill:H2", "mechanical", "nonplated", pytest.approx(0.0026))
+    assert {f.id: f.drill_id for f in result.pads} == {
+        "via:F.Cu:0": "drill:H1", "pad:F.Cu:U1.3": None, "via:B.Cu:0": "drill:H1"}
+
+
+def test_plated_pin_hole_links_its_pad_on_every_layer_and_nothing_else():
+    pin = pad("R1", 5, -5, pin=("J1", "1"))
+    other_net = pad("R1", 5, -5, pin=("J1", "2"))
+    data = export(f_cu=f'<Set net="PWR">{pin}</Set><Set net="GND">{other_net.replace("5", "8", 1)}</Set>',
+                  b_cu=f'<Set net="PWR">{pin}</Set>', drill=hole("H7", 5, -5), shapes=PAD_SHAPES)
+    result = parse_ipc2581_copper(data)
+    assert {f.id: f.drill_id for f in result.pads} == {
+        "pad:F.Cu:J1.1": "drill:H7", "pad:F.Cu:J1.2": None, "pad:B.Cu:J1.1": "drill:H7"}
+    assert result.drills[0].kind == "pin"
+
+
+def test_nonplated_hole_with_or_without_copper():
+    ring = f'<Set>{pad("C1", 3, -3, pin=("H1", "1"))}</Set>'
+    result = parse_ipc2581_copper(export(f_cu=ring, b_cu="", shapes=PAD_SHAPES,
+                                         drill=hole("H9", 3, -3, "NONPLATED", "0.4", net=None)
+                                         + hole("H10", 9, -9, "NONPLATED", "3.2", "M", net=None)))
+    assert [(d.id, d.kind) for d in result.drills] == [("drill:H9", "mechanical"), ("drill:H10", "mechanical")]
+    assert result.pads[0].drill_id == "drill:H9"
+
+
+def test_blind_via_links_only_the_layers_of_its_span():
+    # A 3-copper-layer variant: a via from F.Cu to In1.Cu; B.Cu has via copper at the same
+    # spot (another via's), which this hole must not claim.
+    layers3 = ('<Layer name="F.Cu" layerFunction="CONDUCTOR"/>'
+               '<Layer name="DIELECTRIC_A" layerFunction="DIELPREG"/>'
+               '<Layer name="In1.Cu" layerFunction="CONDUCTOR"/>'
+               '<Layer name="DIELECTRIC_B" layerFunction="DIELCORE"/>'
+               '<Layer name="B.Cu" layerFunction="CONDUCTOR"/>'
+               '<Layer name="F.Cu_In1.Cu" layerFunction="DRILL"><Span fromLayer="F.Cu" toLayer="In1.Cu"/></Layer>')
+    stack3 = ('<Stackup name="s"><StackupGroup name="g">'
+              '<StackupLayer layerOrGroupRef="F.Cu" thickness="0.035" sequence="0"/>'
+              '<StackupLayer layerOrGroupRef="DIELECTRIC_A" thickness="0.2" sequence="1"/>'
+              '<StackupLayer layerOrGroupRef="In1.Cu" thickness="0.035" sequence="2"/>'
+              '<StackupLayer layerOrGroupRef="DIELECTRIC_B" thickness="1.2" sequence="3"/>'
+              '<StackupLayer layerOrGroupRef="B.Cu" thickness="0.035" sequence="4"/>'
+              '</StackupGroup></Stackup>')
+    via = f'<Set net="PWR" padUsage="VIA">{pad("C1", 7, -7, pin=None)}</Set>'
+    step = ('<Step name="board">' + layer_feature("F.Cu", via) + layer_feature("In1.Cu", via)
+            + layer_feature("B.Cu", via) + layer_feature("F.Cu_In1.Cu", hole("H3", 7, -7, "VIA", "0.2"))
+            + '</Step>')
+    data = export(step=step, shapes=PAD_SHAPES).replace(LAYERS.encode(), layers3.encode()) \
+        .replace(STACKUP.encode(), stack3.encode())
+    result = parse_ipc2581_copper(data)
+    assert [l.id for l in result.copper_layers] == ["F.Cu", "In1.Cu", "B.Cu"]
+    assert (result.drills[0].start_layer_id, result.drills[0].end_layer_id) == ("F.Cu", "In1.Cu")
+    assert {f.id: f.drill_id for f in result.pads} == {
+        "via:F.Cu:0": "drill:H3", "via:In1.Cu:0": "drill:H3", "via:B.Cu:0": None}
+
+
+VIA_F = f'<Set net="PWR" padUsage="VIA">{pad("C1", 1, -1, pin=None)}</Set>'
+PIN_F = f'<Set net="PWR">{pad("R1", 1, -1, pin=("J1", "1"))}</Set>'
+
+
+@pytest.mark.parametrize("f_cu,drill,message", [
+    (VIA_F, hole("H1", 1, -1, "VIA", padstack="P", net="GND"), "plated hole with no pad or via copper"),
+    (VIA_F, hole("H1", 1.001, -1, "VIA"), "plated hole with no pad or via copper"),
+    (VIA_F, hole("H1", 1, -1, "VIA", padstack="Q"), "plated hole with no pad or via copper"),
+    (VIA_F + VIA_F, hole("H1", 1, -1, "VIA"), "2 pads on 'F.Cu' share this hole"),
+    (VIA_F, hole("H1", 1, -1, "VIA") + hole("H2", 1, -1, "VIA"), "already has drill drill:H1"),
+    (PIN_F, hole("H1", 1, -1, "VIA"), "VIA hole at pad"),
+    (VIA_F, hole("H1", 1, -1, "PLATED"), "PLATED hole at via"),
+    (VIA_F, hole("H1", 1, -1, "VIA").replace('platingStatus="VIA"', 'platingStatus="SEMIPLATED"'), "SEMIPLATED"),
+    (VIA_F, hole("H1", 1, -1, "VIA").replace('plusTol="0.0"', 'plusTol="0.05"'), "nonzero plusTol"),
+    (VIA_F, hole("H1", 1, -1, "VIA").replace(' minusTol="0.0"', ''), "Hole must have attributes"),
+    (VIA_F, hole("H1", 1, -1, "VIA").replace('</Set>', '<Hole name="H2" diameter="1" platingStatus="VIA" '
+                                             f'{TOLS} x="1" y="-1"/></Set>'), "exactly one Hole"),
+    (VIA_F, hole("H1", 1, -1, "VIA").replace('<Hole', '<SlotCavity name="S" platingStatus="PLATED"/><Hole'),
+     "slots and backdrills are not supported"),
+    (VIA_F, hole("H1", 1, -1, "VIA").replace('geometry="P"', 'geometry="P" polarity="NEGATIVE"'),
+     "Set attributes"),
+    (VIA_F, '<Hole name="H1"/>', "Hole in a drill LayerFeature"),
+])
+def test_unsupported_or_unmatched_drills_raise(f_cu, drill, message):
+    with pytest.raises(ValueError, match=message) as error:
+        parse_ipc2581_copper(export(f_cu=f_cu, b_cu="", drill=drill, shapes=PAD_SHAPES))
+    assert "F.Cu_B.Cu" in str(error.value)
+
+
+@pytest.mark.parametrize("old,new,message", [
+    ('<Span fromLayer="F.Cu" toLayer="B.Cu"/>', '', "one Span"),
+    ('<Span fromLayer="F.Cu" toLayer="B.Cu"/>', '<Span fromLayer="B.Cu" toLayer="F.Cu"/>', "not an ordered pair"),
+    ('<Span fromLayer="F.Cu" toLayer="B.Cu"/>', '<Span fromLayer="F.Mask" toLayer="B.Cu"/>', "not an ordered pair"),
+])
+def test_bad_drill_spans_raise(old, new, message):
+    with pytest.raises(ValueError, match=message):
+        parse_ipc2581_copper(export().replace(old.encode(), new.encode()))
+
+
+def test_routed_slot_layer_with_content_raises():
+    # KiCad writes oblong holes to a layerFunction="ROUT" layer as SlotCavity elements.
+    slot_layer = ('<Layer name="F.Cu_B.Cu_SLOT" layerFunction="ROUT">'
+                  '<Span fromLayer="F.Cu" toLayer="B.Cu"/></Layer>')
+    data = export(step_extra=layer_feature("F.Cu_B.Cu_SLOT", '<Set><SlotCavity name="S1"/></Set>'))
+    with pytest.raises(ValueError, match="routed slots are not supported"):
+        parse_ipc2581_copper(data.replace(LAYERS.encode(), (LAYERS + slot_layer).encode()))

@@ -133,11 +133,11 @@ a real KiCad 10 export, dielectric sublayers and other exporters are untested.
 
 Renamed with the track increment: the module is now `pdnlab_dc.ipc2581_copper`,
 the functions `parse_ipc2581_copper`/`read_ipc2581_copper` and the result
-`Ipc2581Copper`, which also has `tracks` and `pads` (sections below). Fill
+`Ipc2581Copper`, which also has `tracks`, `pads` and `drills` (sections below). Fill
 behaviour is unchanged. It reuses `parse_ipc2581_tree` from the metadata reader (one parse;
 header, units, layers and provenance checked there only). The result holds
-`source`, `copper_layers`, `nets`, `fills`, `tracks`, `pads`, `unread`,
-`uninspected_layers` and `scope`. It is not a `BoardModel` and is not a
+`source`, `copper_layers`, `nets`, `fills`, `tracks`, `pads`, `drills`,
+`unread`, `uninspected_layers` and `scope`. It is not a `BoardModel` and is not a
 complete board.
 
 ```python
@@ -146,7 +146,7 @@ from pdnlab_dc.ipc2581_copper import read_ipc2581_copper
 copper = read_ipc2581_copper("board.xml")
 [(f.id, f.net_id, f.layer_id, f.geometry.area) for f in copper.fills]
 copper.unread              # copper a later increment reads; empty for KiCad boards now
-copper.uninspected_layers  # drill, slot, mask, ... LayerFeatures not looked at
+copper.uninspected_layers  # mask, paste, legend, ... LayerFeatures not looked at
 ```
 
 What KiCad 10.0.8 writes, from its exporter source (`pcb_io_ipc2581.cpp` at tag
@@ -271,3 +271,45 @@ Checked against KiCad's own SVG plot of each copper layer (`kicad-cli pcb export
 svg`), which is drawn by KiCad's plotter independently of the exporter: every pad
 and via of `tests/fixtures/pad_shapes` matches within 0.433% of its area
 (`tests/test_pad_shapes_fixture.py`), the difference being curve approximation.
+
+## Drill reader (2026-11-21)
+
+Every `Hole` in a `layerFunction="DRILL"` LayerFeature becomes one
+`DrillFeature` in `Ipc2581Copper.drills`: ID `drill:<hole name>`, position in
+metres with IPC Y reversed once, diameter in metres, start and end layer from
+the drill layer's `Span`, and kind and plating from `platingStatus`:
+`VIA` → `via`/`plated`, `PLATED` → `pin`/`plated`, `NONPLATED` →
+`mechanical`/`nonplated`.
+
+KiCad 10.0.8 writes one drill layer per span (`<Layer name="F.Cu_B.Cu"
+layerFunction="DRILL"><Span fromLayer toLayer/>`): via holes on each via's own
+top-to-bottom span, pad holes always `F.Cu` to `B.Cu`. Each hole is
+`<Set geometry="<padstack>" net><Hole name diameter platingStatus plusTol="0.0"
+minusTol="0.0" x y/></Set>`; oblong holes go to a `layerFunction="ROUT"` slot
+layer as `SlotCavity`, and backdrills add references to the hole.
+
+Nothing names the pad a hole belongs to. The pad and via copper of the same
+padstack (`Set@geometry` = `Pad@padstackDefRef`) and net at exactly the hole's
+position, on each copper layer of the span, gets `drill_id`. A layer without such
+copper is fine (KiCad may remove unused inner rings), and so is a non-plated hole
+without copper. A span does not by itself mean contact (see above).
+
+Raises, with drill layer, net and element path: two pads on one layer for a
+hole; a pad claimed by two holes; a `VIA` hole at a component pad or a `PLATED`
+hole at a via; a plated hole with no copper on any span layer; another
+`platingStatus`; a nonzero tolerance; a `Set` that is not exactly one `Hole`
+(slots, backdrills); other `Set` attributes; a drill layer without one `Span`,
+or a span that is not an ordered pair of copper layers; a `ROUT` (slot) layer
+with content.
+
+Holes are recorded, not cut: pad and via outlines stay solid. The diameter is
+KiCad's drill value; whether that is the drilled or the finished size, and the
+plating thickness, are setup assumptions, applied when the cleanup increment
+cuts holes and the contact model adds barrels.
+
+Checked against KiCad's board file (`tests/test_pad_shapes_fixture.py`): every
+via of `tests/fixtures/pad_shapes` matches its KiCad via in position, drill,
+span and net, with via copper linked on all four layers, and every plated pin
+hole matches its pad's drill, plating and net and sits at its pad's centre.
+Spans other than `F.Cu` to `B.Cu` are tested with synthetic XML only (a blind
+via on a three-layer stack).
