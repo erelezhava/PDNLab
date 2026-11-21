@@ -1863,3 +1863,114 @@ graphic segments and arcs are read as tracks; a dashed or square-ended one
 raises.
 
 Stopped after tracks: no pads, drills, union, meshing, setup, CLI or solve.
+
+## 2026-11-21 — Phase 2 small task: IPC-2581 pads and via copper
+
+**Result / Recommendation: pads and vias are read. Each IPC-2581 `Pad` on copper
+becomes a `CopperFeature` of kind `pad` or `via`, a solid outline built from the
+export's shape dictionary and turned by its rotation. Against KiCad's own SVG
+plot of each copper layer, all 36 pad and via shapes of the public pad board and
+all 1,206 of Erekle's private test board (394 pads, 812 vias) match within 1% of
+their area; worst 0.433% and 0.645%, both the inscribed-circle deficit of a small
+round shape. Per-layer counts equal KiCad's file on both boards. Cloud
+workspace: 130 focused tests pass; full suite 593 passed, 4 skipped on Python
+3.11.18, 3.13.18 and 3.14.6; Erekle's machine 597 passed. Recommendation: merge,
+then start the drills increment.**
+
+Worked step by step with Erekle. Decisions by Erekle (2026-11-21):
+
+- Support all six KiCad pad shapes: circle (`Circle`), rectangle (`RectCenter`),
+  oval (`Oval`), round-rect (`RectRound`), chamfered rect (`RectCham`), and
+  custom or trapezoid (`Contour`). Any other shape raises.
+- Rotation: the shape is turned counter-clockwise in IPC (Y-up) coordinates by
+  the pad's `Xform rotation` about its `Location`. Any other `Xform` attribute
+  raises.
+- Round parts use the track rule: 1 µm chord error, vertices on the true circle.
+- Through-hole pads and vias are read now, as solid outlines on every copper
+  layer the export lists them on (kinds `pad` and `via`). Holes and barrels
+  come with drills; until then the result says outlines are solid.
+- IDs: `pad:<layer>:<component>.<pin>`, with `#2`... for a repeated pin, and
+  `via:<layer>:<k>`; the element path stays in `source_ref`.
+- Three KiCad exporter limits are documented, not detected (see below).
+- Custom pads: accept from KiCad's source that their outline is written with Y
+  flipped; revisit only if a real board uses custom pads.
+- Thermal reliefs: check later with a public board, before copper cleanup
+  (roadmap increment 7).
+- Keep the pad board's SVG plot in the repository as a permanent test.
+
+Evidence, in the order it was gathered:
+
+1. One pad, `tests/fixtures/arc_track` R1 pad 1. KiCad: footprint at (144.31,
+   80.05) rotated −90°, pad local (−1, 0), round-rect 1.2 × 1.4 mm, ratio
+   0.208333. Export: `Location` (144.310, −79.050), already absolute with Y
+   negated; `Xform rotation="270.0"`; `RectRound` 1.20 × 1.40, radius 0.250
+   (= 0.208333 × 1.2), all corners `true`. A 1.2 × 1.4 rectangle looks the same
+   turned 90° or 270°, so this board could not show the rotation direction.
+2. KiCad 10.0.8 exporter source (`pcb_io_ipc2581.cpp`): one dictionary shape per
+   KiCad pad shape as in the table of the contract doc; `Xform` carries only the
+   pad's absolute rotation; shapes use `PADSTACK::ALL_LAYERS`; `Location` adds
+   the pad offset without rotating it; `RectCham` is written without the rounding
+   of a rounded chamfered pad.
+3. `tests/fixtures/pad_shapes`, a public 4-layer board Erekle drew for this:
+   round-rect, oval, circle, custom (triangle) and one-corner chamfered pads at
+   15, 20, 30, 45 and 60°, a through-hole connector, flipped copies on the back,
+   3 vias, a pad with no net. Export: no back-side pad has a mirror flag; KiCad
+   stores flipped pads already mirrored (R4's chamfer is `bottom_left`, JP2's
+   custom points have Y negated) and the export copies that. Through-hole pads
+   and vias appear on all four copper layers.
+4. That board against KiCad's SVG plot (`kicad-cli pcb export svg --layers
+   F.Cu,In1.Cu,In2.Cu,B.Cu --mode-multi --exclude-drawing-sheet
+   --drill-shape-opt 0 --black-and-white`), in board millimetres, measuring the
+   area of the symmetric difference over the pad's area: vias 0.433% (an exact
+   SVG circle against our 39-vertex one), round-rects 0.12 to 0.30%, chamfered
+   R3/R4 pad 1 0.005% and 0.003%, custom triangles 0.006 to 0.009%. Each plot draws
+   exactly as many pad and via shapes as were read. Controls with the reader
+   broken on purpose: rotation clockwise 99.8% worst mismatch, oval sides
+   swapped 18.3%, chamfer corners swapped 3.0%; a mirrored custom pad stayed at
+   0.43% because the triangle is symmetric, so a synthetic L-shaped custom pad
+   test was added, which fails on that mirror.
+5. Erekle's private board, run on his machine with a scratch script
+   (`check_real_pads.py`, not committed) on a fresh export and SVG plot of the
+   same board version, output pasted. KiCad pads/vias against exported per layer:
+   F.Cu 263/203 and 263/203, In1.Cu 13/203 and 13/203, In2.Cu 13/203 and 13/203,
+   B.Cu 105/203 and 105/203. Shapes used: SMD circle 100, rect 74, round-rect 190;
+   through-hole circle 10, rect 3; 2 non-plated holes without copper, neither
+   written nor counted. No per-layer padstack, pad offset, rounded chamfer or
+   custom pad. Plot comparison: 394 pads and 812 vias, none above 1%, worst
+   0.645% for each, which is 1 − sin(11.25°)/(11.25° in radians), the deficit of
+   a 32-vertex circle. Fills 11, tracks 785, nothing unread.
+
+Tests: `tests/test_pad_outline.py` (27), `tests/test_ipc2581_copper.py` (100: the
+fill and track tests, pads and vias on every layer, rotation direction with a
+one-corner chamfer, every dictionary shape, custom-pad handedness, unassigned
+pads, repeated pins, nested via sets, 15 pad rejections, 2 dictionary
+rejections), `tests/test_pad_shapes_fixture.py` (3, against the committed SVG
+plot, 1% limit). Deliberate one-line bugs each made tests fail. In `pad_outline`:
+rotation clockwise (1 failed), rotation ignored (1), holes dropped by `place` (1),
+corner names shuffled (4), radius used as diameter (1), oval on the short axis
+(3), corner radius ignored (6), chamfer limit removed (1). In the reader: pad Y
+not reversed (3), not transformed (3), rotation ignored (2) or negated (2),
+chamfer corners ignored (1), via labelled `pad` (2), repeated pins not numbered
+(1), oval sides swapped (1), `Location` y ignored (2), extra `Xform` attributes
+allowed (1), custom pad mirrored (1, after the L test). Against the SVG test
+alone: rotation negated (2 of 3), chamfer corners swapped (2), oval sides swapped
+(1), pad Y not reversed (2), round-rect radius halved (1).
+
+Corrections made during the work, recorded so the numbers can be trusted:
+same-size one-line bugs written in the same second as the original can run from
+Python's cached bytecode, so a check can test the wrong code. Found when a
+restored module still failed; from now on bug checks run with
+`PYTHONDONTWRITEBYTECODE=1`. The track increment's checks were re-run that way
+and all still fail as recorded. Test expectations corrected, not the reader:
+circle vertex count (61, not a hand estimate of 49), small-circle area (about
+0.4% below exact), an oval's apex is not a vertex, the custom pad's area (1.875
+mm²), B.Cu pad count (11), and a corner test that took its corner table from the
+module under test.
+
+Not run or not covered: an export with an asymmetric custom pad; per-layer
+padstacks, offsets and rounded chamfers (not on either board; undetectable);
+thermal reliefs where fills meet pads (planned); KiCad 11. The SVG files are
+KiCad output and keep its trailing spaces.
+
+Stopped after pads and via copper: no drill holes, barrels, union, meshing,
+setup, CLI or solve.

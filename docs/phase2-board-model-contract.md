@@ -133,10 +133,10 @@ a real KiCad 10 export, dielectric sublayers and other exporters are untested.
 
 Renamed with the track increment: the module is now `pdnlab_dc.ipc2581_copper`,
 the functions `parse_ipc2581_copper`/`read_ipc2581_copper` and the result
-`Ipc2581Copper`, which also has `tracks` (next section). Fill behaviour is
-unchanged. It reuses `parse_ipc2581_tree` from the metadata reader (one parse;
+`Ipc2581Copper`, which also has `tracks` and `pads` (sections below). Fill
+behaviour is unchanged. It reuses `parse_ipc2581_tree` from the metadata reader (one parse;
 header, units, layers and provenance checked there only). The result holds
-`source`, `copper_layers`, `nets`, `fills`, `tracks`, `unread`,
+`source`, `copper_layers`, `nets`, `fills`, `tracks`, `pads`, `unread`,
 `uninspected_layers` and `scope`. It is not a `BoardModel` and is not a
 complete board.
 
@@ -145,7 +145,7 @@ from pdnlab_dc.ipc2581_copper import read_ipc2581_copper
 
 copper = read_ipc2581_copper("board.xml")
 [(f.id, f.net_id, f.layer_id, f.geometry.area) for f in copper.fills]
-copper.unread              # counts of pads and via pads, not read yet
+copper.unread              # copper a later increment reads; empty for KiCad boards now
 copper.uninspected_layers  # drill, slot, mask, ... LayerFeatures not looked at
 ```
 
@@ -156,7 +156,7 @@ What KiCad 10.0.8 writes, from its exporter source (`pcb_io_ipc2581.cpp` at tag
 | --- | --- | --- |
 | Where nets are listed | Only as `Set@net`. `generateLogicalNets` exists but is not called; no `PhyNet`/`PhyNetGroup`. `net` is omitted for net code 0. Names pass through `genString`: `:` becomes `_`, and `_N` is appended on a clash with another generated name. | Nets are the distinct `Set@net` values in the Step, with exported names. A copper `Set` without `net` is unassigned, `net_id=None`. `LogicalNet`/`PhyNet`/`PhyNetGroup` raise. |
 | Which copper `Contour`s are zone fills | Board zones: `Contour` in the net's `Set/Features/UserSpecial`. Also `Contour`s in teardrop sets (`geometryUsage="TEARDROP"`), copper text (`"TEXT"`) and footprint-owned zones (`Set@componentRef`, no `net`). Board graphic polygons/rectangles/circles are `UserPrimitiveRef`s to the user dictionary. | Only the first kind is read as `fill`. Teardrops, copper text, footprint graphics and `UserPrimitiveRef` shapes raise, with or without a net. A footprint-owned zone with a `Contour` raises because its net is not exported. |
-| Mixed sets | One net `Set` per layer holds fills, track `Line`/`Arc` and via `Pad`s (`padUsage="VIA"`); pin pads go in a second `Set`. Board graphic segments/arcs share the `UserSpecial` with tracks and are indistinguishable from them. | `Line` and `Arc` are read as tracks (next section). `Pad` (pin or via) is counted by kind, layer and net in `unread`, not read or validated; the pad increment reads it. |
+| Mixed sets | One net `Set` per layer holds fills, track `Line`/`Arc` and via `Pad`s (`padUsage="VIA"`); pin pads go in a second `Set`. Board graphic segments/arcs share the `UserSpecial` with tracks and are indistinguishable from them. | `Line` and `Arc` are read as tracks, `Pad`s as pads or vias (sections below). |
 | Fill topology | The zone filler calls `Fracture()`: each fill is one outline that reaches every hole along a zero-width slit (an edge and, later, the same edge reversed). Shapely rejects such a ring as self-intersecting. | Each reversed edge pair is removed, splitting the ring into one outline and its holes. This is the criterion of KiCad's own `unfractureSingle`. No vertex is moved; area is unchanged. Explicit `Cutout`s are kept as holes. |
 
 Supported fill geometry, anything else raising with layer, net and element path:
@@ -219,3 +219,55 @@ area is always slightly below exact (Erekle's choice, 2026-11-16).
 
 Not unioned with fills, pads or each other: overlaps and the joints between
 segments remain for the cleanup increment.
+
+## Pad and via reader (2026-11-21)
+
+Every `Pad` in a copper layer's `Set` (or in a nested via `Set`) becomes one
+`CopperFeature` in `Ipc2581Copper.pads`: kind `pad` with ID
+`pad:<layer>:<component>.<pin>` from its `PinRef` (`#2`, `#3`... for a pin number
+a footprint repeats), or kind `via` with ID `via:<layer>:<k>` when the `Set` has
+`padUsage="VIA"`. `source_ref` is the element path; the net comes from the `Set`.
+
+KiCad 10.0.8 writes a pad as
+`<Pad padstackDefRef><Xform rotation/>?<Location x y/><StandardPrimitiveRef id/><PinRef componentRef pin/>?</Pad>`,
+with `Location` already absolute and `rotation` the pad's absolute angle. Its shape
+is an `EntryStandard` in `DictionaryStandard`:
+
+| KiCad pad | Dictionary shape | Outline (`pdnlab_dc.pad_outline`, pad frame, Y up) |
+| --- | --- | --- |
+| circle | `Circle diameter` | inscribed circle, 1 µm rule |
+| rectangle | `RectCenter width height` | exact |
+| oval | `Oval width height` | stadium on the long side (a circle if equal) |
+| round-rect | `RectRound width height radius` + all four corner flags `true` | four inscribed quarter circles |
+| chamfered rect | `RectCham width height chamfer` + `upperLeft`/... flags `true` | exact 45-degree cuts at the named corners |
+| trapezoid, custom | `Contour` (pad frame, Y already flipped) | as given; slits split as for fills; never repaired |
+
+The outline is turned counter-clockwise by `rotation` (IPC, Y up) about the
+pad's `Location`, then every vertex is transformed once to metres. A back-side
+pad has no mirror flag: KiCad stores flipped footprints already mirrored (a
+`top_left` chamfer becomes `bottom_left`), and the export copies that.
+Through-hole pads and vias appear on every copper layer the export lists them on
+and are read there; their outlines are solid until the drills increment cuts the
+holes and adds the barrels.
+
+Raises, with layer, net and element path: an `Xform` with anything but
+`rotation`; a missing or repeated `Location` or `StandardPrimitiveRef`; a
+`UserPrimitiveRef` or any other element in a pad; extra pad attributes; a
+component pad without a `PinRef` or a via with one; an unknown shape id; a
+`RectRound` with a corner not rounded, a `RectCham` flag other than `true`, any
+other shape element, or a shape with children; sizes that are not positive, a
+radius or chamfer over half the shorter side; curved steps in a custom outline.
+A duplicate dictionary id or an entry with more than one shape raises with the
+dictionary path.
+
+Exporter limits, from KiCad 10.0.8's source, not detectable in the export:
+shapes are written for `PADSTACK::ALL_LAYERS`, so a per-layer padstack (different
+front, inner or back shapes) comes out wrong on the other layers; a pad offset is
+added without rotating it, so a rotated pad with an offset is misplaced; a
+chamfered rect that is also rounded loses its rounding. Erekle's test board has
+none of these.
+
+Checked against KiCad's own SVG plot of each copper layer (`kicad-cli pcb export
+svg`), which is drawn by KiCad's plotter independently of the exporter: every pad
+and via of `tests/fixtures/pad_shapes` matches within 0.433% of its area
+(`tests/test_pad_shapes_fixture.py`), the difference being curve approximation.

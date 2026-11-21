@@ -331,11 +331,14 @@ result-log entry and synthetic tests; none of them yet produces a complete
 3. Nets and filled-zone contours. Merged (PR #13); read on one real KiCad 10
    export.
 4. Tracks, segments and arcs (`pdnlab_dc.track_outline`; the reader is renamed
-   `pdnlab_dc.ipc2581_copper`). Implemented on branch `phase2-ipc2581-tracks`;
-   checked against KiCad's board file on the public arc board and one real
-   board.
-5. Planned, each separate: pads, drills. Cleanup, meshing, setup files, CLI and
-   real-board solves come after.
+   `pdnlab_dc.ipc2581_copper`). Merged (PR #16); checked against KiCad's board
+   file on the public arc board and one real board.
+5. Pads and via copper (`pdnlab_dc.pad_outline`). Implemented on branch
+   `phase2-ipc2581-pads`; checked against KiCad's own SVG plot on the public pad
+   board and one real board.
+6. Planned, each separate: drills (holes and plated barrels), then a public
+   thermal-relief board. Cleanup, meshing, setup files, CLI and real-board
+   solves come after.
 
 ### Phase 0 experiments
 
