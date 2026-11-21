@@ -106,6 +106,15 @@ class UnreadCount:
 
 
 @dataclass(frozen=True)
+class PadPin:
+    """Which component pin a pad copper feature belongs to, and where its pad sits."""
+    feature_id: str
+    component_ref: str
+    pin_number: str
+    position_m: tuple[float, float]
+
+
+@dataclass(frozen=True)
 class Ipc2581Copper:
     """Nets and zone fills only. Not a BoardModel: see scope, unread, uninspected_layers."""
     source: SourceInfo
@@ -114,6 +123,7 @@ class Ipc2581Copper:
     fills: tuple[CopperFeature, ...]
     tracks: tuple[CopperFeature, ...]
     pads: tuple[CopperFeature, ...]
+    pad_pins: tuple[PadPin, ...]
     drills: tuple[DrillFeature, ...]
     unread: tuple[UnreadCount, ...]
     uninspected_layers: tuple[str, ...]
@@ -249,8 +259,9 @@ def _attributes(element, required, optional=(), context=""):
 
 
 class _CopperLayerReader:
-    def __init__(self, layer, transform, fills, tracks, pads, shapes, unread, pad_index):
-        self.layer, self.fills, self.unread = layer, fills, unread
+    def __init__(self, layer, transform, fills, tracks, pads, shapes, unread, pad_index,
+                 pad_pins):
+        self.layer, self.fills, self.unread, self.pad_pins = layer, fills, unread, pad_pins
         self.transform = [Decimal(repr(v)) for v in transform]
         self.index = 0
         self.tracks, self.track_index = tracks, 0
@@ -397,6 +408,9 @@ class _CopperLayerReader:
             self.pad_ids[base] += 1
             feature_id = base if self.pad_ids[base] == 1 else f"{base}#{self.pad_ids[base]}"
             kind = "pad"
+            a, b, tx, c, d, ty = self.matrix
+            self.pad_pins.append(PadPin(feature_id, pin.get("componentRef"), pin.get("pin"),
+                                        (a*x + b*y + tx, c*x + d*y + ty)))
         exact = tuple(_number(parts["Location"].get(k), context) for k in ("x", "y"))
         self.pad_index.setdefault((self.layer, element.get("padstackDefRef"), net) + exact,
                                   []).append(len(self.pads))
@@ -597,7 +611,7 @@ def parse_ipc2581_copper(data):
     copper = [layer.id for layer in meta.copper_layers]
     nets, fills, tracks, pads, unread, seen, uninspected = set(), [], [], [], Counter(), set(), []
     shapes = _shape_dictionary(root)
-    pad_index, drill_features = {}, []
+    pad_index, drill_features, pad_pins = {}, [], []
     for feature, tag, _ in _children(steps[0], "Step"):
         if tag != "LayerFeature":
             continue
@@ -624,7 +638,7 @@ def parse_ipc2581_copper(data):
             uninspected.append(layer)
             continue
         reader = _CopperLayerReader(layer, meta.source.xy_transform, fills, tracks, pads, shapes,
-                                    unread, pad_index)
+                                    unread, pad_index, pad_pins)
         for child, child_tag, child_ref in _children(feature, ref):
             if child_tag != "Set":
                 raise ValueError(f"{child_ref}: {child_tag} in a copper LayerFeature is not "
@@ -644,7 +658,8 @@ def parse_ipc2581_copper(data):
                    sorted(unread.items(), key=lambda item: (order[item[0][0]], item[0][1],
                                                             item[0][2] or "")))
     return Ipc2581Copper(source, meta.copper_layers, net_records, tuple(fills), tuple(tracks),
-                         tuple(pads), tuple(drills), counts, tuple(uninspected))
+                         tuple(pads), tuple(pad_pins), tuple(drills), counts,
+                         tuple(uninspected))
 
 
 def read_ipc2581_copper(path):
