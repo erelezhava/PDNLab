@@ -2132,3 +2132,68 @@ already matched to KiCad in the fills increment, but pad connections were not
 classified); zones with a hatched fill; KiCad 11.
 
 Stopped after checking: no union, meshing, setup, CLI or solve.
+
+## 2026-11-21 — Phase 2 small task: assemble one BoardModel (pin pads)
+
+**Result / Recommendation: one `BoardModel` is built from an IPC-2581 export.
+`ipc2581_board.read_ipc2581_board(path)` returns the stackup, nets, fills,
+tracks, pad and via copper, drills and new `PinPad` records, and `BoardModel`'s
+own checks pass on all three public boards and on Erekle's private board. On
+the private board all 355 pin pads match KiCad's board file in component, pad
+number, net, position (1 nm) and hole. Cloud workspace: 12 new tests pass; full
+suite 632 passed, 4 skipped on Python 3.11.18, 3.13.18 and 3.14.6; Erekle's
+machine 636 passed. Merged as PR #23. Recommendation: start copper cleanup
+(increment 9), first settling the hole cutting radius and plating.**
+
+Worked step by step with Erekle. Decisions by Erekle (2026-11-21):
+
+- One `PinPad` per physical pad: the pad copper of one component and pin at one
+  position, one feature per copper layer in stackup order. A pin with several
+  pads gives several `PinPad`s (`pin:<component>.<pin>`, then `#2`...) sharing a
+  pin key; `BoardModel` checks they share a net.
+- Component, pin and position come from the copper reader (`pad_pins`, read from
+  `PinRef` and `Location`), not parsed back out of feature IDs.
+- A copper pad on a non-plated hole raises ("not supported yet"); revisit when a
+  real board needs one. Neither tested board has one.
+
+Also: the copper reader's unread copper raises (the model would be incomplete);
+one pad's copper on different nets, or on two holes, raises. The model's
+assumptions start with the board scope (holes not cut, no barrel, copper not
+merged) and end with the non-copper layers not inspected.
+
+Measured:
+
+| Board | Layers | Nets | Features | Pins | On a hole | Drills |
+| --- | --- | --- | --- | --- | --- | --- |
+| arc (public) | 2 | 2 | 13 tracks, 4 pads | 4 | 0 | 0 |
+| pad (public) | 4 | 14 | 18 tracks, 24 pads, 12 vias | 18 | 2 | 3 via, 2 pin |
+| thermal (public) | 4 | 2 | 3 fills, 7 pads, 8 vias | 4 | 1 | 2 via, 1 pin |
+| private | 4 | 141 | 11 fills, 785 tracks, 394 pads, 812 vias | 355 | 13 | 203 via, 13 pin, 2 mechanical |
+
+Private board (scratch script `check_real_board.py`, not committed; output
+pasted by Erekle): 342 single-layer pins and 13 through-hole pins with copper on
+all four layers; 355 of 355 matched against KiCad, none only in ours, none only
+in KiCad, no net or drill difference. The first run reported 22 pads only in
+KiCad: all were paste-only apertures (8 `F.Paste`, 14 `B.Paste`) with an empty
+pad number and no copper, which the script had counted as copper pads. The
+script and the committed test's KiCad parser now skip pads with no copper layer,
+counted by their own layers; no unnumbered pad with copper was found. 2
+`np_thru_hole` pads are the 2 mechanical holes.
+
+Tests: `tests/test_ipc2581_board.py` (12): every pin of the three public boards
+against the `.kicad_pcb` (the test applies footprint position and rotation
+itself, independent of the exporter; covers rotated and back-side footprints);
+counts; the model holds everything the copper reader returned; assumptions; six
+rejections built by changing one record of a real reader result (unread copper,
+two nets, two holes, non-plated hole, a pin with two pads, those pads on two
+nets). Deliberate one-line bugs, run with `PYTHONDONTWRITEBYTECODE=1`, each made
+tests fail: pin position not transformed (3), pads grouped without position
+(11), pin drill dropped (8), unread copper not checked (1), net mismatch not
+checked (1), non-plated hole not checked (1), layers not in stackup order (2). A
+first sabotage round was discarded: its restore step reverted the uncommitted
+reader change, so it tested a broken mix.
+
+Not run or not covered: copper pads on non-plated holes, pins with several pads
+and blind or buried pin holes on a real export (none on these boards); KiCad 11.
+
+Stopped after assembly: no union, hole cutting, meshing, setup, CLI or solve.
