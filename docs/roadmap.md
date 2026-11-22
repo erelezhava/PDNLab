@@ -5,14 +5,14 @@ measured results live in [DECISIONS.md](DECISIONS.md); the full plan, gates and
 estimates in [project-plan.md](project-plan.md). Update this file after each
 increment, in the same commit or pull request.
 
-Last updated: 2026-11-22, after the copper cleanup decisions.
+Last updated: 2026-11-22, after copper cleanup was merged (PR #27).
 
 ## Where we are
 
-Phase 2 (real boards). Importer steps 1 to 8 are merged: every kind of copper
-and hole in a KiCad 10 IPC-2581 export is read, checked against KiCad and
-assembled into one `BoardModel` (also on the private test board: 355/355 pins
-match). Copper cleanup is next. The solver core is accepted on synthetic cases.
+Phase 2 (real boards). Increments 1 to 9 are merged: every kind of copper and
+hole in a KiCad 10 IPC-2581 export is read, checked against KiCad, assembled
+into one `BoardModel` and cleaned into pieces per net and layer with holes cut
+(private test board: 355/355 pins and 610 pieces match KiCad). Meshing is next. The solver core is accepted on synthetic cases.
 Nothing yet meshes and solves an imported board outside the experiments.
 
 Committed scope is the MVP: a command-line DC drop solver for KiCad 10 boards,
@@ -43,8 +43,8 @@ after release 0.1.
 | 6 | Drill holes: `DrillFeature` records linked to pad and via copper (`ipc2581_copper.py`) | Merged, PR #19; public pad board 5/5 and real board 218/218 holes match KiCad's file. Holes are recorded, not cut (cutting and barrels in 9 and 11) |
 | 7 | Thermal reliefs: public test board, fills meeting pads checked against KiCad's plot | Merged, PR #21; no reader change; public thermal board 12/12 pad and via connections and all fills match KiCad |
 | 8 | Assemble a full `BoardModel` from the readers (`ipc2581_board.py`, `PinPad` records) | Merged, PR #23; public boards 26/26 and private board 355/355 pins match KiCad's board file |
-| 9 | Copper cleanup per net and layer (union into pieces with IDs; plated holes cut at finished radius + plating; overlapping nets raise) | In progress: decisions logged 2026-11-22 |
-| 10 | Meshing real copper with Gmsh (start from experiment 8's settings) | Planned |
+| 9 | Copper cleanup per net and layer (`copper_cleanup.py`: pieces with IDs; plated holes cut at finished radius + plating; overlapping nets raise) | Merged, PR #27; public boards and private board (610 pieces) match KiCad's plot piece for piece |
+| 10 | Meshing real copper with Gmsh (start from experiment 8's settings) | Next |
 | 11 | Via and pin contact model on real boards (rims and barrels, setup plating); islands on simulated nets raise | Planned |
 | 12 | Setup file: sources, loads, rails, material and plating | Planned |
 | 13 | Solve, VTU output for ParaView, CLI | Planned |
@@ -113,3 +113,6 @@ decided when it starts.
   now); copper with no net kept as its own group outside the DC solve; each net
   and layer split into pieces with IDs; an island on a simulated net is an error
   (checked in increment 11, once barrels join layers).
+- Cleanup output: pieces `piece:<layer>:<net>:<k>`, largest first; hole outlines
+  at the 1 µm rule; breakout and pieces under 1 µm² raise; track stubs inside a
+  drilled hole are listed as drilled away (37 on the private board).

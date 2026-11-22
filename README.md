@@ -251,6 +251,12 @@ layer and its hole). Copper is not yet merged per net and layer, holes are not
 cut and nothing is meshed or solved from it. Every pin of the public boards is
 checked against KiCad's own board file.
 
+`pdnlab_dc.copper_cleanup.clean_copper(board, plating_m)` merges each net's
+copper per layer into separate pieces and cuts the holes (plated holes at the
+finished radius plus the plating thickness, which is required). Shorts between
+nets, annular-ring breakouts and slivers raise. The pieces match KiCad's plot of
+the public boards piece for piece.
+
 ## Phase 0 experiments
 
 | # | Experiment | Status |
