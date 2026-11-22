@@ -125,6 +125,7 @@ class Ipc2581Copper:
     pads: tuple[CopperFeature, ...]
     pad_pins: tuple[PadPin, ...]
     drills: tuple[DrillFeature, ...]
+    component_layers: tuple[tuple[str, str], ...]
     unread: tuple[UnreadCount, ...]
     uninspected_layers: tuple[str, ...]
     scope: str = SCOPE
@@ -648,6 +649,17 @@ def parse_ipc2581_copper(data):
     for feature, ref in drill_features:
         drills += _read_drills(feature, layer_elements[feature.get("layerRef")], ref, copper,
                                meta.source.xy_transform, pads, pad_index)
+    components = {}
+    for component in steps[0].findall(_q("Component")):
+        ref_des, side = component.get("refDes"), component.get("layerRef")
+        where = f"Component[@refDes={ref_des!r}]"
+        if not ref_des or not ref_des.strip():
+            raise ValueError("Component without a refDes")
+        if ref_des in components:
+            raise ValueError(f"{where}: more than one Component with this refDes")
+        if side not in (copper[0], copper[-1]):
+            raise ValueError(f"{where}: layerRef {side!r} is not an outer copper layer")
+        components[ref_des] = side
     source = replace(meta.source, assumptions=ASSUMPTIONS)
     net_records = tuple(Net(name, name) for name in sorted(nets))
     # Reuse the model's reference checks (unique IDs, known layers and nets); not returned.
@@ -658,8 +670,8 @@ def parse_ipc2581_copper(data):
                    sorted(unread.items(), key=lambda item: (order[item[0][0]], item[0][1],
                                                             item[0][2] or "")))
     return Ipc2581Copper(source, meta.copper_layers, net_records, tuple(fills), tuple(tracks),
-                         tuple(pads), tuple(pad_pins), tuple(drills), counts,
-                         tuple(uninspected))
+                         tuple(pads), tuple(pad_pins), tuple(drills),
+                         tuple(sorted(components.items())), counts, tuple(uninspected))
 
 
 def read_ipc2581_copper(path):

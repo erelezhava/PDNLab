@@ -203,6 +203,8 @@ class BoardModel:
     features: tuple[CopperFeature, ...] = ()
     pads: tuple[PinPad, ...] = ()
     drills: tuple[DrillFeature, ...] = ()
+    # (component reference, outer copper layer it is mounted on); empty when unknown.
+    component_layers: tuple[tuple[str, str], ...] = ()
 
     def __post_init__(self):
         if not isinstance(self.source, SourceInfo):
@@ -236,6 +238,20 @@ class BoardModel:
                 raise ValueError(f"feature {feature.id}: unknown layer or net")
             if feature.drill_id is not None:
                 self._check_drill(feature.drill_id, feature.layer_id, order, lookup)
+        sides = _sequence(self.component_layers, "component_layers")
+        outer = (self.layers[0].id, self.layers[-1].id)
+        for entry in sides:
+            if (not isinstance(entry, tuple) or len(entry) != 2 or not isinstance(entry[0], str)
+                    or not entry[0].strip() or entry[1] not in outer):
+                raise ValueError("component_layers must hold (reference, outer copper layer) pairs")
+        if len({ref for ref, _ in sides}) != len(sides):
+            raise ValueError("duplicate component in component_layers")
+        object.__setattr__(self, "component_layers", sides)
+        if sides:
+            known = {ref for ref, _ in sides}
+            missing = sorted({pad.component_ref for pad in self.pads} - known)
+            if missing:
+                raise ValueError(f"component_layers lacks pin components: {missing[:5]}")
         pin_nets = {}
         for pad in self.pads:
             if pad.pin_key in pin_nets and pin_nets[pad.pin_key] != pad.net_id:

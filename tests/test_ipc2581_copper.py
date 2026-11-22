@@ -206,7 +206,7 @@ def test_result_is_scoped_and_not_a_board_model():
     meta = parse_ipc2581_metadata(data)
     assert isinstance(result, Ipc2581Copper) and not isinstance(result, BoardModel)
     assert {f.name for f in fields(result)} == {"source", "copper_layers", "nets", "fills", "tracks",
-                                                "pads", "pad_pins", "drills", "unread", "uninspected_layers",
+                                                "pads", "pad_pins", "drills", "component_layers", "unread", "uninspected_layers",
                                                 "scope"}
     assert result.scope == SCOPE and "not a complete board" in SCOPE
     assert "not cut" in SCOPE and "no barrel" in SCOPE   # what the result still leaves out
