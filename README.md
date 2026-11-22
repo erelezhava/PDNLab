@@ -36,6 +36,23 @@ gmsh --version
 Without Gmsh, the integration tests that need it are skipped. CI installs it so
 those tests run there too. The solver never imports the Gmsh Python API.
 
+## Describing a simulation
+
+A simulation is described by a TOML setup file, by pins. Generate a form from the
+board's IPC-2581 export, fill it in, and check it:
+
+```sh
+uv run pdnlab-dc init path/to/board.xml          # writes path/to/setup.toml
+# fill in plating_um, the [[source]] and the [[load]]s; pin names are listed at
+# the bottom of the file, net by net
+uv run pdnlab-dc check path/to/setup.toml        # says what will be simulated
+```
+
+A `[[source]]` holds its `power_pins` at `volts`, a `[[load]]` draws `amps`; each
+lists its `power_pins` and `gnd_pins`, and the pins of one list are joined (one
+group). Power and GND are both simulated. Solving (`pdnlab-dc run`) is not
+implemented yet.
+
 ## Prepared solver (phase 1)
 
 Existing assembly, ties and resistor primitives remain in `pdnlab_dc.fem`;
