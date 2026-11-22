@@ -2264,3 +2264,76 @@ with IDs, and an island on a simulated net is an error before solving
 Also from 2026-11-21: plated holes are cut at finished radius + plating
 (plating a required input), non-plated holes at their radius. Until the setup
 file exists, cleanup takes plating as a function argument.
+
+## 2026-11-22 — Phase 2 small task: copper cleanup (pieces and cut holes)
+
+**Result / Recommendation: copper cleanup works on real boards.
+`copper_cleanup.clean_copper(board, plating_m)` merges each net's copper per
+layer into separate pieces and cuts the holes. On Erekle's private board it
+gives 610 pieces, the same count as KiCad's own plot on every layer, with area
+within 0.07%; all 864 plated cuts are surrounded by copper; nothing raised.
+Cloud workspace: 24 new tests pass; full suite 656 passed, 4 skipped on Python
+3.11.18, 3.13.18 and 3.14.6; Erekle's machine 660 passed. Merged as PR #27.
+Recommendation: start meshing (increment 10) from experiment 8's settings.**
+
+Worked step by step with Erekle; decisions as logged on 2026-11-21 (hole radius,
+plating) and 2026-11-22 (shorts, no-net copper, islands). Agreed in this step
+(Erekle, 2026-11-22):
+
+- Output: `CopperPiece` (ID `piece:<layer>:<net>:<k>`, `none` for no-net copper,
+  largest first; one valid Polygon; the features and holes it holds), `CutHole`
+  (drill, layer, radius, the pieces whose edge it is; a list, since a non-plated
+  hole may split a track) and `CleanCopper` (pieces, cut holes, removed
+  features, plating, assumptions).
+- Hole outlines follow the 1 µm rule (vertices on the true circle), so a hole
+  edge keeps at most 1 µm of extra copper; meshing may refine them.
+- A plated hole breaking out of its own copper raises. A piece under 1 µm²
+  raises. Nothing is simplified.
+- Found on the private board: 37 track stubs (34 at vias, 3 at pin holes) lie
+  entirely inside a drilled hole, where a route ends at the via or pin centre.
+  The drill removes them, so they are listed in `CleanCopper.removed` with the
+  hole; any other feature left in no piece raises. The public pad board has one.
+
+Measured, plating 25 µm (the value experiment 8 used; the real value is a setup
+input):
+
+| Board | Pieces | Cut holes | No-net pieces | Drilled away | Against KiCad's plot |
+| --- | --- | --- | --- | --- | --- |
+| arc (public) | 2 | 0 | 0 | 0 | not compared (no SVG) |
+| pad (public) | 30 | 20 | 1 | 1 | same pieces per layer, area within 0.36% |
+| thermal (public) | 7 | 12 | 0 | 0 | same pieces per layer, area within 0.38% |
+| private | 610 (199, 78, 186, 147 per layer) | 864 | 0 | 37 | same pieces per layer, area within 0.072% |
+
+The reference is KiCad's SVG plot of each layer with the same holes cut here as
+exact circles; area differences are curve approximation (our 1 µm polygons
+against the plot's exact circles; largest on boards of small round pads). By
+hand on the thermal board: a lone 0.6 mm via pad keeps π(0.3² − 0.175²) mm²
+within 0.3%, TP1's ring π(1² − 0.525²) mm². Private board: 237 net-and-layer
+groups, 182 of them one piece, the largest 138 pieces (pads joined through
+vias; input to the island check); smallest piece 0.076 mm²; cleanup 2.5 s.
+
+Tests: `tests/test_copper_cleanup.py` (24): pieces against KiCad's plot on the
+pad and thermal boards; counts; every feature in a piece of its net or drilled
+away, on all three public boards; cut radii by hand, doubled plating, a
+non-plated 2 mm hole cut without plating; no-net group; assumptions; rejections
+made by changing one record of the real thermal board (plating missing, zero,
+negative, NaN, boolean or text; two nets overlapping; no-net copper on a fill;
+breakout; a drilled wall reaching another net; hole copper on two nets; a
+0.5 µm² piece; unknown hole plating); a stub inside a via drilled away and one
+reaching past the wall kept. Deliberate one-line bugs, run with
+`PYTHONDONTWRITEBYTECODE=1` on a committed tree, each made tests fail: plating
+not added (6), plating added to non-plated holes (1, after adding the non-plated
+test, which the first round showed was missing), holes not cut (3), overlap
+check off (2), breakout check off (1), drilled-wall check off (1), tiny-piece
+check off (1), hole-nets check off (1), pieces smallest first (1), drilled-away
+features not recorded (3). Two changes cannot alter any result and were not
+caught: piece membership ignoring the net (the overlap check already excludes
+it) and partly-inside features counted as inside a hole (such a feature always
+keeps copper in a piece). The raise for copper in no piece and not inside a
+hole is a guard with no real case to test.
+
+Not run or not covered: invalid pieces after Shapely operations (none produced);
+net ties; non-plated holes on a real board; per-hole plating; KiCad 11.
+
+Stopped after cleanup: no barrels, contacts, island check, meshing, setup, CLI or
+solve.

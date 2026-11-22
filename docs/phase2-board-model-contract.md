@@ -342,3 +342,35 @@ Checked against KiCad's board file (`tests/test_ipc2581_board.py`): every pin of
 the three public fixture boards matches its KiCad pad in component, pad number,
 net, position and hole. Pads with no copper layer (paste-only apertures) and
 `np_thru_hole` pads are not pins.
+
+## Copper cleanup (2026-11-22)
+
+`pdnlab_dc.copper_cleanup.clean_copper(board, plating_m)` takes a `BoardModel`
+and returns `CleanCopper`:
+
+- `pieces`: one `CopperPiece` per separate piece of copper on one layer and net
+  (`net_id` None for copper with no net, its own group, outside the DC solve):
+  ID `piece:<layer>:<net>:<k>` (`none` for no net), largest first; one valid
+  Polygon in metres with holes cut; `feature_ids` and `drill_ids` it holds.
+- `cut_holes`: one `CutHole` per hole and layer where copper was cut: drill,
+  layer, `radius_m`, and `piece_ids` (one piece for every plated hole).
+- `removed`: features lying entirely inside a hole on their layer (a track stub
+  at a via or pin centre), with the hole: drilled away.
+- `plating_m` and `assumptions`.
+
+Plated holes are cut at d/2 + t (finished radius plus plating, the drilled
+wall); non-plated holes at d/2. Hole outlines have every vertex on the true
+circle with at most 1 µm chord error. `plating_m` is required.
+
+Raises: copper of two nets overlapping by more than 1 µm² (a short; net ties not
+supported yet); no-net copper overlapping net copper; a plated hole whose
+drilled wall reaches another net's copper; a plated hole breaking out of its own
+net's copper on a layer where it has pad or via copper; a hole whose pad and via
+copper is on two nets; an invalid piece; a piece under 1 µm²; copper left in no
+piece and not inside a hole. Nothing is repaired, simplified or dropped
+silently. Several pieces per net and layer are normal; islands are checked by
+the contact model.
+
+Checked against KiCad's SVG plot of the public pad and thermal boards
+(`tests/test_copper_cleanup.py`): the same separate pieces on every layer and
+area within curve-approximation error.
