@@ -4,11 +4,14 @@
 folder next to it and writes a setup file to fill in there (an IPC-2581 ``.xml`` works
 too); ``pdnlab-dc check
 SETUP.toml`` reads it, checks it against the board and says what it will simulate.
-Solving (``pdnlab-dc run SETUP.toml``) comes with increment 13.
+``pdnlab-dc run SETUP.toml`` solves it and writes the results to ``results/<setup
+name>/`` next to the setup file (in a KiCad project: ``pdnlab/results/setup/``), never
+replacing earlier results without ``--force``.
 """
 
 import argparse
 import os
+import shutil
 import sys
 from pathlib import Path
 
@@ -73,6 +76,48 @@ def _check(args):
     return 0
 
 
+def _run(args):
+    from .copper_cleanup import clean_copper
+    from .results import write_results
+    from .memory import apply_ceiling, default_limit_bytes
+    from .run import simulate
+    try:
+        setup = read_setup(args.setup)
+        folder = setup.path.parent / "results" / setup.path.stem
+        if folder.exists() and not args.force:
+            print(f"{folder} already exists; use --force to replace it", file=sys.stderr)
+            return 1
+        if refresh_export(setup):
+            print(f"re-exported {setup.board_path} (the .kicad_pcb was newer)")
+        board = read_ipc2581_board(setup.board_path)
+        bound = bind_setup(setup, board)
+        limit = setup.max_memory_bytes or default_limit_bytes()
+        notes = []
+        if limit:
+            notes.append(apply_ceiling(limit))
+            print(f"memory limit {limit / 1024**3:.1f} GB; {notes[-1]}")
+        run = simulate(bound, board, clean_copper(board, setup.plating_m), log=print,
+                       memory_limit_bytes=limit, notes=notes)
+    except MemoryError:
+        print("not solved: out of memory under the hard ceiling; lower max_memory_gb's "
+              "rounds or free memory (the machine itself was protected)", file=sys.stderr)
+        return 1
+    except (ValueError, RuntimeError, FileNotFoundError) as error:
+        # Setup, island, refinement and kicad-cli errors all say what to fix; no traceback.
+        print(f"not solved: {error}", file=sys.stderr)
+        return 1
+    if folder.exists():
+        shutil.rmtree(folder)
+    write_results(run, folder, f"{setup.path.name} on {setup.board_path.name}")
+    print((folder / "summary.txt").read_text(encoding="utf-8"))
+    print(f"results in {folder}")
+    if not all(rail.settled for rail in run.rails):
+        print("NOT SETTLED: see the summary; the results are from the last round that fit",
+              file=sys.stderr)
+        return 2
+    return 0
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(prog="pdnlab-dc", description="PDNLab DC: PCB IR drop")
     commands = parser.add_subparsers(dest="command", required=True)
@@ -88,6 +133,10 @@ def main(argv=None):
     check = commands.add_parser("check", help="check a setup file against its board")
     check.add_argument("setup", help="the setup file (.toml)")
     check.set_defaults(handler=_check)
+    run = commands.add_parser("run", help="solve a setup file and write the results")
+    run.add_argument("setup", help="the setup file (.toml)")
+    run.add_argument("--force", action="store_true", help="replace earlier results")
+    run.set_defaults(handler=_run)
     args = parser.parse_args(argv)
     return args.handler(args)
 
