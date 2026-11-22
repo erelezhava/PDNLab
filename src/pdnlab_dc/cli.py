@@ -20,7 +20,18 @@ from .kicad import KicadError, export_ipc2581
 from .setup import SetupError, bind_setup, read_setup, refresh_export, setup_template
 
 
+def _protect(limit_bytes=None):
+    """Hard memory ceiling for this command (and kicad-cli and Gmsh under it); returns the
+    limit applied, or None where the RAM is unknown."""
+    from .memory import apply_ceiling, default_limit_bytes
+    limit = limit_bytes or default_limit_bytes()
+    if limit:
+        apply_ceiling(limit)
+    return limit
+
+
 def _init(args):
+    _protect()
     source = Path(args.board)
     if source.suffix == ".kicad_pcb":
         # A KiCad board: everything goes in a pdnlab/ folder next to it.
@@ -40,7 +51,15 @@ def _init(args):
             print(f"export failed: {error}", file=sys.stderr)
             return 1
         print(f"exported {board_path}")
-    board = read_ipc2581_board(board_path)
+    try:
+        board = read_ipc2581_board(board_path)
+    except MemoryError:
+        print(f"board not usable: out of memory reading {board_path} (the machine itself "
+              "was protected)", file=sys.stderr)
+        return 1
+    except (ValueError, FileNotFoundError) as error:
+        print(f"board not usable: {error}", file=sys.stderr)
+        return 1
     # Paths are written relative to the setup file's folder.
     base = out.resolve().parent
     board_name = Path(os.path.relpath(board_path.resolve(), base)).as_posix()
@@ -56,10 +75,16 @@ def _init(args):
 def _check(args):
     try:
         setup = read_setup(args.setup)
+        _protect(setup.max_memory_bytes)
         if refresh_export(setup):
             print(f"re-exported {setup.board_path} (the .kicad_pcb was newer)")
         bound = bind_setup(setup, read_ipc2581_board(setup.board_path))
-    except (SetupError, FileNotFoundError, KicadError) as error:
+    except MemoryError:
+        print("setup not usable: out of memory reading the board (the machine itself was "
+              "protected)", file=sys.stderr)
+        return 1
+    except (ValueError, FileNotFoundError, KicadError) as error:
+        # SetupError is a ValueError; board reader errors say what to fix.
         print(f"setup not usable: {error}", file=sys.stderr)
         return 1
     print(f"board {setup.board_path}, plating {setup.plating_m * 1e6:g} um, GND net {bound.gnd_net!r}")

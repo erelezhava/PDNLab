@@ -6,7 +6,10 @@ generateLayerSetNet): per copper layer and net one Set with Features/UserSpecial
 fill Contours and track Lines/Arcs, via pads in that Set (padUsage="VIA") and pin pads in
 a second Set. Copper without a net has no net attribute. Text, teardrops and footprint
 graphics get their own Set with geometryUsage; board graphic shapes are referenced from
-the user dictionary. Those must raise: copper on a net may not be left out of a result.
+the user dictionary. Text and footprint graphics with no net are read as copper with no
+net (strokes and polygons, the forms seen in KiCad 10's export of the public Jetson Nano
+baseboard); on a net they raise, as do teardrops and board graphic shapes: copper on a
+net may not be left out of a result.
 Fills are fractured: holes are reached along zero-width slits.
 Coordinates are IPC (Y up); the stored frame reverses Y once and is in metres.
 """
@@ -82,9 +85,15 @@ GRAPHIC_SETS = [
     ('<Set><Features><Location x="0" y="0"/><UserPrimitiveRef id="UPOLY_3"/></Features></Set>',
      "no net.*board graphic shape"),
     ('<Set geometryUsage="GRAPHIC" componentRef="U1"><Features><Location x="1" y="1"/>'
-     '<UserPrimitiveRef id="UPOLY_2"/></Features></Set>', "footprint graphic on copper"),
-    (TEXT_SET, "copper text"),
+     '<UserPrimitiveRef id="UPOLY_2"/></Features></Set>', "copper graphic under a nonzero Location"),
+    ('<Set geometryUsage="GRAPHIC" componentRef="U1" net="PWR"><Features><Location x="0" y="0"/>'
+     '<UserPrimitiveRef id="UPOLY_2"/></Features></Set>', "footprint graphic on copper on net 'PWR'"),
+    (TEXT_SET.replace('geometryUsage="TEXT"', 'geometryUsage="TEXT" net="PWR"'),
+     "copper text on net 'PWR'"),
     (TEARDROP_SET, "net 'PWR'.*teardrop"),
+    ('<Set net="PWR"><Features><UserSpecial><Arc startX="81" startY="-5" endX="81" endY="-5" '
+     'centerX="80" centerY="-5" clockwise="true"><LineDesc lineWidth="0.2" lineEnd="ROUND"/>'
+     '</Arc></UserSpecial></Features></Set>', "net 'PWR'.*full-circle track is not supported"),
 ]
 B_CU = (f'<Set net="GND">{special(contour(OUTER, CUTOUT), contour(FRACTURED))}</Set>'
         f'<Set net="PWR" padUsage="VIA">{special(LINE)}{VIA_PAD}</Set>')
@@ -105,14 +114,14 @@ SHAPES = ('<EntryStandard id="C1"><Circle diameter="0.6"/></EntryStandard>'
 
 
 def export(f_cu=F_CU, b_cu=B_CU, drill=DRILL, *, step=None, step_extra="", revision="C",
-           shapes=SHAPES):
+           shapes=SHAPES, dictionaries=""):
     if step is None:
         step = (f'<Step name="board"><Datum x="0.0" y="0.0"/>{step_extra}'
                 f'{layer_feature("F.Cu", f_cu)}{layer_feature("B.Cu", b_cu)}'
                 f'{layer_feature("F.Cu_B.Cu", drill)}</Step>')
     return (f'<?xml version="1.0" encoding="utf-8"?>\n<IPC-2581 revision="{revision}" '
             f'xmlns="{NAMESPACE}"><Content><DictionaryStandard units="MILLIMETER">{shapes}'
-            f'</DictionaryStandard></Content>'
+            f'</DictionaryStandard>{dictionaries}</Content>'
             f'<Ecad name="Design"><CadHeader units="MILLIMETER"/>'
             f'<CadData>{LAYERS}{STACKUP}{step}</CadData></Ecad></IPC-2581>').encode()
 
@@ -207,7 +216,7 @@ def test_result_is_scoped_and_not_a_board_model():
     assert isinstance(result, Ipc2581Copper) and not isinstance(result, BoardModel)
     assert {f.name for f in fields(result)} == {"source", "copper_layers", "nets", "fills", "tracks",
                                                 "pads", "pad_pins", "drills", "component_layers", "unread", "uninspected_layers",
-                                                "scope"}
+                                                "graphics", "scope"}
     assert result.scope == SCOPE and "not a complete board" in SCOPE
     assert "not cut" in SCOPE and "no barrel" in SCOPE   # what the result still leaves out
     assert result.source.assumptions[0] == SCOPE
@@ -688,3 +697,100 @@ def test_routed_slot_layer_with_content_raises():
     data = export(step_extra=layer_feature("F.Cu_B.Cu_SLOT", '<Set><SlotCavity name="S1"/></Set>'))
     with pytest.raises(ValueError, match="routed slots are not supported"):
         parse_ipc2581_copper(data.replace(LAYERS.encode(), (LAYERS + slot_layer).encode()))
+
+
+# Copper text and footprint graphics with no net, in the forms KiCad 10 wrote for the
+# public Jetson Nano baseboard: text as Polylines and Lines naming a LineDescRef, a logo
+# as a UserPrimitiveRef whose Contours are a filled polygon (closing point repeated) and
+# the same outline stroked (FillDesc HOLLOW); a graphic circle as a full-circle Arc.
+DECOR_DICTIONARIES = (
+    '<DictionaryLineDesc units="MILLIMETER"><EntryLineDesc id="LINE_2">'
+    '<LineDesc lineWidth="0.2" lineEnd="ROUND"/></EntryLineDesc></DictionaryLineDesc>'
+    '<DictionaryUser units="MILLIMETER"><EntryUser id="UPOLY_1"><UserSpecial>'
+    '<Contour><Polygon><PolyBegin x="70" y="-1"/><PolyStepSegment x="72" y="-1"/>'
+    '<PolyStepSegment x="72" y="-3"/><PolyStepSegment x="70" y="-3"/>'
+    '<PolyStepSegment x="70" y="-1"/><PolyStepSegment x="70" y="-1"/></Polygon></Contour>'
+    '<Contour><Polygon><PolyBegin x="70" y="-1"/><PolyStepSegment x="72" y="-1"/>'
+    '<PolyStepSegment x="72" y="-3"/><PolyStepSegment x="70" y="-3"/>'
+    '<PolyStepSegment x="70" y="-1"/><PolyStepSegment x="70" y="-1"/>'
+    '<LineDesc lineWidth="0.1" lineEnd="ROUND"/><FillDesc fillProperty="HOLLOW"/></Polygon></Contour>'
+    '</UserSpecial></EntryUser></DictionaryUser>')
+DECOR_TEXT = ('<Set geometryUsage="TEXT"><NonstandardAttribute name="TEXT" value="Rev" type="STRING"/>'
+              '<Features><Location x="0.0" y="0.0"/><UserSpecial>'
+              '<Polyline><PolyBegin x="50" y="-1"/><PolyStepSegment x="52" y="-1"/>'
+              '<LineDescRef id="LINE_2"/></Polyline>'
+              '<Polyline><PolyBegin x="55" y="-1"/><LineDescRef id="LINE_2"/></Polyline>'
+              '<Line startX="60" startY="-1" endX="61" endY="-1"><LineDescRef id="LINE_2"/></Line>'
+              '</UserSpecial></Features></Set>')
+DECOR_LOGO = ('<Set geometryUsage="GRAPHIC" componentRef="N1"><Features><Location x="0.0" y="0.0"/>'
+              '<UserPrimitiveRef id="UPOLY_1"/></Features></Set>')
+DECOR_CIRCLE = ('<Set><Features><UserSpecial><Arc startX="81" startY="-5" endX="81" endY="-5" '
+                'centerX="80" centerY="-5" clockwise="true"><LineDesc lineWidth="0.2" lineEnd="ROUND"/>'
+                '</Arc></UserSpecial></Features></Set>')
+
+
+def decor_export(b_cu_extra=DECOR_TEXT + DECOR_LOGO, f_cu_extra=DECOR_CIRCLE):
+    return export(f_cu=F_CU + f_cu_extra, b_cu=B_CU + b_cu_extra, dictionaries=DECOR_DICTIONARIES)
+
+
+def test_copper_text_and_graphics_with_no_net_are_read_as_copper_with_no_net():
+    from pdnlab_dc.ipc2581_board import assemble_board
+    result = parse_ipc2581_copper(decor_export())
+    assert [(g.id, g.kind, g.net_id, g.layer_id) for g in result.graphics] == [
+        ("text:B.Cu:0", "text", None, "B.Cu"), ("graphic:B.Cu:0", "graphic", None, "B.Cu")]
+    text, logo = result.graphics
+    assert text.source_ref == "LayerFeature[@layerRef='B.Cu']/Set[3]"
+    # Strokes of width 0.2 mm with round ends: 2 mm and 1 mm segments and a dot (mm²).
+    exact = (2 + 1) * 0.2 + 3 * math.pi * 0.1 ** 2
+    assert text.geometry.area * 1e6 == pytest.approx(exact, rel=2e-3) and text.geometry.area * 1e6 < exact
+    assert text.geometry.geom_type == "MultiPolygon" and len(text.geometry.geoms) == 3
+    # The 2 x 2 mm logo square, filled, and its outline stroked 0.1 mm wide: the square
+    # grown by 0.05 mm with round corners. Y reversed into the stored frame.
+    exact = 4 + 4 * 2 * 0.05 + math.pi * 0.05 ** 2
+    assert logo.geometry.area * 1e6 == pytest.approx(exact, rel=1e-3)
+    assert logo.geometry.bounds == pytest.approx((0.06995, 0.00095, 0.07205, 0.00305), abs=1e-9)
+    # The full circle with no net is a track ring: radius 1 mm, stroke 0.2 mm.
+    (ring,) = [t for t in result.tracks if t.net_id is None]
+    assert len(ring.geometry.interiors) == 1
+    assert ring.geometry.area * 1e6 == pytest.approx(math.pi * (1.1 ** 2 - 0.9 ** 2), rel=1e-3)
+    # They join the board as copper with no net.
+    board = assemble_board(result)
+    assert {f.id for f in board.features} >= {"text:B.Cu:0", "graphic:B.Cu:0"}
+    assert any("Copper text and footprint graphics with no net" in a
+               for a in result.source.assumptions)
+
+
+@pytest.mark.parametrize("old,new,message", [
+    ('<LineDescRef id="LINE_2"/></Polyline>', '<LineDescRef id="LINE_9"/></Polyline>',
+     "'LINE_9' is not in DictionaryLineDesc"),
+    ('id="UPOLY_1"/></Features>', 'id="UPOLY_9"/></Features>', "'UPOLY_9' is not in DictionaryUser"),
+    ('<PolyStepSegment x="52" y="-1"/>', '<PolyStepCurve x="52" y="-1" centerX="51" centerY="-1" clockwise="true"/>',
+     "PolyStepCurve.*curved steps are not supported"),
+    ('<NonstandardAttribute', '<Xform rotation="90"/><NonstandardAttribute', "Xform in copper text"),
+    ('<Location x="0.0" y="0.0"/><UserSpecial>', '<Location x="1.0" y="0.0"/><UserSpecial>',
+     "copper text under a nonzero Location"),
+])
+def test_copper_text_and_graphics_errors(old, new, message):
+    text_and_logo = (DECOR_TEXT + DECOR_LOGO).replace(old, new, 1)
+    assert text_and_logo != DECOR_TEXT + DECOR_LOGO
+    with pytest.raises(ValueError, match=message):
+        parse_ipc2581_copper(decor_export(b_cu_extra=text_and_logo))
+
+
+def test_graphic_fill_descriptions_other_than_hollow_or_fill_raise():
+    dictionaries = DECOR_DICTIONARIES.replace('fillProperty="HOLLOW"', 'fillProperty="MESH"')
+    with pytest.raises(ValueError, match="fillProperty 'MESH' is not supported"):
+        parse_ipc2581_copper(export(b_cu=B_CU + DECOR_LOGO, dictionaries=dictionaries))
+
+
+def test_a_hollow_graphic_outline_is_only_its_stroke():
+    # The logo's stroked Contour alone (FillDesc HOLLOW): a ring 0.1 mm wide along the
+    # 2 x 2 mm square, round outside corners and sharp inside ones; nothing inside.
+    start = DECOR_DICTIONARIES.index("<Contour>")
+    second = DECOR_DICTIONARIES.index("<Contour>", start + 1)
+    dictionaries = DECOR_DICTIONARIES[:start] + DECOR_DICTIONARIES[second:]
+    (logo,) = parse_ipc2581_copper(export(b_cu=B_CU + DECOR_LOGO, dictionaries=dictionaries)).graphics
+    exact = (4 + 4 * 2 * 0.05 + math.pi * 0.05 ** 2) - 1.9 ** 2
+    assert logo.geometry.area * 1e6 == pytest.approx(exact, rel=1e-3)
+    assert len(logo.geometry.interiors) == 1
+    assert not logo.geometry.contains(Point(0.071, 0.002))      # the square's centre

@@ -219,6 +219,30 @@ def test_init_command(tmp_path, capsys):
     assert (board.parent / "setup.toml").exists()
 
 
+def test_init_and_check_protect_memory_and_report_board_errors_in_one_line(tmp_path, capsys,
+                                                                           ceiling_calls):
+    from pdnlab_dc.memory import default_limit_bytes
+    board = tmp_path / "arc_board.xml"
+    board.write_bytes(ARC.read_bytes())
+    assert main(["init", str(board), "--min-pins", "2"]) == 0
+    assert ceiling_calls == [default_limit_bytes()]          # half the RAM, as for run
+    # A board the reader refuses: one line naming what is wrong, no traceback.
+    bad = tmp_path / "bad.xml"
+    bad.write_bytes(ARC.read_bytes().replace(b'revision="C"', b'revision="B"', 1))
+    assert main(["init", str(bad), "-o", str(tmp_path / "bad.toml")]) == 1
+    err = capsys.readouterr().err
+    assert err.startswith("board not usable: ") and "revision" in err and "Traceback" not in err
+    # check uses the setup's max_memory_gb, and reports a refused board the same way.
+    good = GOOD.replace(f'board = "../fixtures/arc_track/{ARC.name}"', 'board = "arc_board.xml"')
+    (tmp_path / "limited.toml").write_text(good + "\n[options]\nmax_memory_gb = 3\n")
+    assert main(["check", str(tmp_path / "limited.toml")]) == 0
+    assert ceiling_calls[-1] == 3 * 1024**3
+    (tmp_path / "bad_board.toml").write_text(good.replace('"arc_board.xml"', '"bad.xml"'))
+    assert main(["check", str(tmp_path / "bad_board.toml")]) == 1
+    err = capsys.readouterr().err
+    assert err.startswith("setup not usable: ") and "revision" in err and "Traceback" not in err
+
+
 def test_check_command(tmp_path, capsys):
     (tmp_path / "board.xml").write_bytes(ARC.read_bytes())
     good = GOOD.replace(f'board = "../fixtures/arc_track/{ARC.name}"', 'board = "board.xml"')
