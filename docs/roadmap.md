@@ -5,19 +5,23 @@ measured results live in [DECISIONS.md](DECISIONS.md); the full plan, gates and
 estimates in [project-plan.md](project-plan.md). Update this file after each
 increment, in the same commit or pull request.
 
-Last updated: 2026-11-22, after the setup file was merged (PR #35).
+Last updated: 2026-11-22, after solving and output were merged (PR #38).
 
 ## Where we are
 
-Phase 2 (real boards). Increments 1 to 12 are merged: every kind of copper and
+Phase 2 (real boards). Increments 1 to 13 are merged: every kind of copper and
 hole in a KiCad 10 IPC-2581 export is read, checked against KiCad, assembled
 into one `BoardModel`, cleaned into pieces per net and layer with holes cut,
-meshed per net and built into a solvable network with barrels, pin contacts and
-an island check; a TOML setup file says what to simulate, generated as a form by
-`pdnlab-dc init` and checked by `pdnlab-dc check` (private test board: a power
-net passes the island check, a pin-to-pin resistance converges within gate 5,
-and a filled-in setup is accepted). Solving and output are next: nothing yet
-writes a result.
+meshed per net and built into a solvable network; a TOML setup file, generated
+as a form from the KiCad board by `pdnlab-dc init`, says what to simulate, and
+`pdnlab-dc run` solves power and GND, refines until settled and writes a
+summary, CSV tables, VTU fields and PNG maps, within a memory limit. First real
+result (private board, one rail at 1 A): 3.917 mV drop, settled at the first
+halving, 7.1 GB at its peak.
+
+No release yet (Erekle, 2026-11-22: a great product first). Next is a
+performance stage, then GND with several rails, then the release 0.1 gate run.
+Hardware path: laptop (22.6 GB), then a 32 GB work PC, then an office server.
 
 Committed scope is the MVP: a command-line DC drop solver for KiCad 10 boards,
 results viewed in ParaView, release 0.1. Phases 3 to 6 are backlog, re-decided
@@ -51,21 +55,50 @@ after release 0.1.
 | 10 | Meshing one net with Gmsh (`board_mesh.py`): default size rules, refinement at holes, SMD pads and thin copper; halving the scale halves every size | Merged, PR #30; first mesh within 1% of converged on every case measured, private power-net plane included |
 | 11 | Contact model (`board_network.py`): sheets, barrels, equipotential pin contacts, island check; mesh follows pad outlines | Merged, PR #32; exact pin, barrel and ring case within 0.019%; private power net passes the island check |
 | 12 | Setup file (`setup.py`, TOML): sources and loads by pin groups, nets from the pins; `pdnlab-dc init` writes a form, `pdnlab-dc check` checks it | Merged, PR #35; a filled-in form for the private board accepted |
-| 13 | Solve with the refinement check; voltage and current-density maps (VTU and PNG), text/CSV summary (per-load voltage, per-pin and per-via currents, hot spots, losses); `pdnlab-dc run` | Next |
-| 14 | Release 0.1 gate run on the real test board | Planned |
+| 12a | Project flow: `init` from the `.kicad_pcb` (exported by `kicad-cli` into `pdnlab/`), re-export when newer; pin wildcards `U1.*` | Merged, PR #37; wildcards found 5 hidden GND pins on the private board |
+| 13 | Solve with the refinement check; voltage and current-density maps (VTU and PNG), text/CSV summary (per-load voltage, per-pin and per-via currents, hot spots, losses); `pdnlab-dc run`; memory protection | Merged, PR #38; private board: 3.917 mV at 1 A, settled at scale 0.5, peak 7.1 GB, 547 s |
+| P | Performance stage (below) | Next |
+| G | GND with several rails: one GND solve carrying every rail's return current | Planned, design to decide |
+| 14 | Release 0.1 gate run on the real test board | Planned, after P and G |
 
-Increments 8 to 14 are an outline, not yet agreed in detail; each is split and
-decided when it starts.
+Increments P, G and 14 are an outline, not yet agreed in detail; each is split
+and decided when it starts.
+
+## Performance stage
+
+Decided by Erekle (2026-11-22): every optimisation we have an idea for, each
+measured (time and peak memory) on the private board and on an 8-layer benchmark
+board with several power nets, against the result before it. A change that does
+not move the result by more than the refinement tolerance is kept only if it
+pays.
+
+1. Per-stage timing and memory in the summary (cleanup, mesh, assembly, solve,
+   output), so every later step is measured.
+2. An iterative solver: conjugate gradients with algebraic multigrid (pyamg)
+   instead of a direct factorisation.
+3. Cholesky (CHOLMOD) instead of LU, if a direct solver stays.
+4. Free memory between steps (mesh, network, solve, fields).
+5. A memory estimate before the first round, from the board's size.
+6. numpy instead of slow Python loops in assembly and output.
+7. Refine only where it matters: at source and load pads, not at every hole and
+   pad on the net.
+8. Adaptive refinement: refine only where the local error is large, instead of
+   halving every size.
+9. Mesh layers and nets in parallel.
+10. Rust or C only for a hotspot that remains after the steps above.
+
+The 8-layer benchmark board is still needed (Erekle's, kept private like the
+test board, or a public one).
 
 ## Release 0.1 gates
 
 | Gate | Status |
 | --- | --- |
 | 1 Analytic tests | Pass on synthetic cases (Phase 1) |
-| 2 Current conservation, global | Checks exist; not yet run on an imported board |
-| 3 Current conservation, per via | Checks exist; not yet run on an imported board |
-| 4 Power balance | Checks exist; not yet run on an imported board |
-| 5 Mesh convergence on the real board | Shown on the production path for one power net (plane +0.38%, pin to pin +0.33% at the first halving); the per-run check comes in increment 13 |
+| 2 Current conservation, global | Passed on the private board, power and GND (PR #38; a run stops if any check fails) |
+| 3 Current conservation, per via | Passed on the private board, power and GND (PR #38) |
+| 4 Power balance | Passed on the private board: losses equal drop × current on both nets (PR #38) |
+| 5 Mesh convergence on the real board | Shown on the production path for one power net (plane +0.38%, pin to pin +0.33% at the first halving); every run now refines until settled (private board: 14.14 µV against 49.17 µV allowed at scale 0.5) |
 | 6 Cross-check with padne | Reference run recorded in experiment 7; production comparison open |
 
 ## After release 0.1
@@ -75,9 +108,11 @@ decided when it starts.
 
 ## Open decisions
 
-- Meshing time on dense nets (increment 13): a private power net takes 42 s per
-  mesh at scale 1, because refinement zones around 30 holes and many pads cover
-  the plane. If it matters, refine only around pads that are sources or loads.
+- GND with several rails (increment G): GND carries every rail's return current
+  at once; the per-rail GND solve is right for one rail only.
+- Meshing time on dense nets: a private power net takes 42 s per mesh at scale
+  1, because refinement zones around 30 holes and many pads cover the plane.
+  Moved into the performance stage (item 7).
 - Custom pads: whether KiCad writes their outline with Y already flipped is
   accepted from KiCad's source, not yet shown on an export with an asymmetric
   custom pad. Revisit if a real board uses custom pads (the test board has none).

@@ -38,20 +38,59 @@ those tests run there too. The solver never imports the Gmsh Python API.
 
 ## Describing a simulation
 
-A simulation is described by a TOML setup file, by pins. Generate a form from the
-board's IPC-2581 export, fill it in, and check it:
+A simulation is described by a TOML setup file, by pins. Start from the KiCad
+board: `init` exports it with KiCad's own `kicad-cli` (on `PATH`, or named by
+`PDNLAB_KICAD_CLI`) into a `pdnlab/` folder in the project and writes a form to
+fill in there. An IPC-2581 export (`.xml`) works too.
 
 ```sh
-uv run pdnlab-dc init path/to/board.xml          # writes path/to/setup.toml
+uv run pdnlab-dc init path/to/project/board.kicad_pcb
+# writes path/to/project/pdnlab/board.xml and path/to/project/pdnlab/setup.toml
 # fill in plating_um, the [[source]] and the [[load]]s; pin names are listed at
 # the bottom of the file, net by net
-uv run pdnlab-dc check path/to/setup.toml        # says what will be simulated
+uv run pdnlab-dc check path/to/project/pdnlab/setup.toml   # says what will be simulated
 ```
 
 A `[[source]]` holds its `power_pins` at `volts`, a `[[load]]` draws `amps`; each
 lists its `power_pins` and `gnd_pins`, and the pins of one list are joined (one
-group). Power and GND are both simulated. Solving (`pdnlab-dc run`) is not
-implemented yet.
+group). `U1.*` means every pin of U1 on that list's net, so hidden power and GND
+pins are not missed; `check` says how many pins each wildcard added. When the
+`.kicad_pcb` is newer than its export, `check` and `run` export it again.
+
+## Running a simulation
+
+```sh
+uv run pdnlab-dc run path/to/project/pdnlab/setup.toml
+```
+
+Each rail's power net and the GND net are solved as separate networks carrying
+the same currents; each load sees V(power) − V(GND). The mesh is made finer
+(scale 1, 0.5, 0.25, 0.125) until the voltage every load sees changes by at most
+the tolerance (default 10 µV + 1 % of its drop; `[options] tolerance_uv` and
+`tolerance_percent`).
+
+Results go to `results/<setup name>/` next to the setup file (in a KiCad
+project: `pdnlab/results/setup/`); earlier results are replaced only with
+`--force`:
+
+- `summary.txt`: per load the voltage it sees and its drop, split into power and
+  GND; the refinement check round by round, with memory per round; per net
+  losses, the solver's checks, current-density hot spots per layer (peak, and
+  averaged over a 0.25 mm disk) and the highest barrel currents; the
+  assumptions.
+- `loads.csv`, `pins.csv` (each pin's share of its group's current), `vias.csv`
+  (each plated hole's largest barrel current).
+- Per net and layer: `<net>_<layer>.vtu` for ParaView (voltage, drop in mV,
+  current density in A/mm²) and `<net>_<layer>_voltage.png` /
+  `<net>_<layer>_current.png`.
+
+Memory: a refinement round is not started if its predicted memory (from the last
+round's measured peak, with a 1.5× margin) exceeds `[options] max_memory_gb`
+(default: half of the computer's RAM) or the free memory. The last completed
+round is then reported, marked NOT SETTLED, and `run` exits with code 2. A hard
+ceiling (the limit + 2 GB, inherited by Gmsh) turns a wrong estimate into an
+out-of-memory message instead of a frozen machine. Exit codes: 0 settled, 1 not
+solved (the message says what to fix), 2 not settled.
 
 ## Prepared solver (phase 1)
 
