@@ -161,6 +161,23 @@ def tie_nodes(matrix, groups):
         (np.ones(n), (np.arange(n), node_map)), shape=(n, node_map.max() + 1)
     )
     reduced = (projection.T @ matrix @ projection).tocsr()
+    # A merged node's internal couplings cancel into its diagonal only up to roundoff,
+    # which grows with the group's size while the row's remaining couplings may be
+    # small (a whole sheet tied, joined only by a barrel). For a conservative network
+    # (zero row sums, checked when solving) the diagonal equals minus the sum of the
+    # off-diagonals: recompute it for merged nodes, removing the cancellation residue.
+    # Only within roundoff of the original rows' size: a genuine leak (nonzero row sum)
+    # is left untouched for the conservation check to reject.
+    merged = np.flatnonzero(np.bincount(node_map) > 1)
+    if merged.size:
+        scale = np.bincount(node_map, weights=np.asarray(abs(matrix).sum(axis=1)).ravel())
+        residue = np.asarray(reduced.sum(axis=1)).ravel()
+        fix = merged[np.abs(residue[merged]) <= 64 * np.finfo(float).eps * scale[merged]]
+        if fix.size:
+            reduced = reduced.tolil()
+            for k in fix:
+                reduced[k, k] = -sum(v for j, v in zip(reduced.rows[k], reduced.data[k]) if j != k)
+            reduced = reduced.tocsr()
     reduced.eliminate_zeros()
     return reduced, node_map
 

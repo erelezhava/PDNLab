@@ -55,7 +55,8 @@ def assemble_board(copper):
                         + ", ".join(copper.uninspected_layers) + ".",)
     source = replace(copper.source, assumptions=assumptions)
     return BoardModel(source, copper.copper_layers, copper.nets,
-                      copper.fills + copper.tracks + copper.pads, pins, copper.drills)
+                      copper.fills + copper.tracks + copper.pads, pins, copper.drills,
+                      copper.component_layers)
 
 
 def _pin_pads(copper):
