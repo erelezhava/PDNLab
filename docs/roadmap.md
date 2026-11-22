@@ -5,7 +5,7 @@ measured results live in [DECISIONS.md](DECISIONS.md); the full plan, gates and
 estimates in [project-plan.md](project-plan.md). Update this file after each
 increment, in the same commit or pull request.
 
-Last updated: 2026-11-22, after the contact model was merged (PR #32).
+Last updated: 2026-11-22, after the setup file and output decisions.
 
 ## Where we are
 
@@ -48,8 +48,8 @@ after release 0.1.
 | 9 | Copper cleanup per net and layer (`copper_cleanup.py`: pieces with IDs; plated holes cut at finished radius + plating; overlapping nets raise) | Merged, PR #27; public boards and private board (610 pieces) match KiCad's plot piece for piece |
 | 10 | Meshing one net with Gmsh (`board_mesh.py`): default size rules, refinement at holes, SMD pads and thin copper; halving the scale halves every size | Merged, PR #30; first mesh within 1% of converged on every case measured, private power-net plane included |
 | 11 | Contact model (`board_network.py`): sheets, barrels, equipotential pin contacts, island check; mesh follows pad outlines | Merged, PR #32; exact pin, barrel and ring case within 0.019%; private power net passes the island check |
-| 12 | Setup file: sources, loads, rails, material and plating | Next |
-| 13 | Solve, VTU output for ParaView, CLI | Planned |
+| 12 | Setup file (TOML): sources and loads by pin groups (power and GND pins), plating, optional resistivity and tolerance; power and GND both simulated | Next: decisions logged 2026-11-22 |
+| 13 | Solve with the refinement check; voltage and current-density maps (VTU and PNG), text/CSV summary (per-load voltage, per-pin and per-via currents, hot spots, losses); CLI | Planned |
 | 14 | Release 0.1 gate run on the real test board | Planned |
 
 Increments 8 to 14 are an outline, not yet agreed in detail; each is split and
@@ -63,8 +63,12 @@ decided when it starts.
 | 2 Current conservation, global | Checks exist; not yet run on an imported board |
 | 3 Current conservation, per via | Checks exist; not yet run on an imported board |
 | 4 Power balance | Checks exist; not yet run on an imported board |
-| 5 Mesh convergence on the real board | Shown in experiment 8 only, not on the production path |
+| 5 Mesh convergence on the real board | Shown on the production path for one power net (plane +0.38%, pin to pin +0.33% at the first halving); the per-run check comes in increment 13 |
 | 6 Cross-check with padne | Reference run recorded in experiment 7; production comparison open |
+
+## After release 0.1
+
+- Remote sense: sense nets and their position on a source (Erekle, 2026-11-22).
 
 ## Open decisions
 
@@ -130,3 +134,7 @@ decided when it starts.
   outlines; through-hole pins contacted on their component's side; an island on
   a simulated net raises and nothing is simulated; `fem.tie_nodes` fix for large
   tied pads (approved).
+- Setup and output (2026-11-22): TOML; sources and loads by equipotential pin
+  groups, nets found from the pins; power and GND solved as separate networks
+  with the same currents; maps as VTU and PNG plus a text/CSV summary; remote
+  sense after release 0.1.
