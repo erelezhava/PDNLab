@@ -17,19 +17,25 @@ pins; ``setup_template(board, board_name)`` writes a form to fill in. Decided by
   gate 5, 10 µV + 1 %).
 * Strict: an unknown key is an error naming it. The board path is relative to the
   setup file's folder.
+* ``kicad_pcb`` (optional) names the KiCad board the export comes from; then the export
+  is refreshed with kicad-cli whenever the board is newer (``refresh_export``).
+* A pin may be written ``"U1.*"``: every pin of U1 on the group's net. The net comes from
+  the group's named pins, so each list needs at least one; ``bind_setup`` returns the
+  groups expanded, and ``BoundSetup.expanded`` says what each wildcard added.
 * Remote sense comes after release 0.1.
 """
 
 import math
+import os
 import re
 import tomllib
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from .board import BoardModel
 from .board_network import COPPER_RESISTIVITY_OHM_M
 
-TOP_KEYS = {"board", "plating_um", "source", "load", "options"}
+TOP_KEYS = {"board", "kicad_pcb", "plating_um", "source", "load", "options"}
 GROUP_KEYS = {"name", "power_pins", "gnd_pins"}
 OPTION_KEYS = {"resistivity_ohm_m", "barrel_resistivity_ohm_m", "tolerance_uv",
                "tolerance_percent"}
@@ -63,6 +69,7 @@ class Setup:
     barrel_resistivity_ohm_m: float
     tolerance_v: float
     tolerance_rel: float
+    kicad_pcb_path: Path | None = None
 
 
 @dataclass(frozen=True)
@@ -79,6 +86,7 @@ class BoundSetup:
     setup: Setup
     gnd_net: str
     rails: tuple[Rail, ...]
+    expanded: tuple[tuple[str, str, str, int], ...] = ()   # (group, list, wildcard, pins added)
 
 
 class SetupError(ValueError):
@@ -152,10 +160,14 @@ def parse_setup(text, path):
                          f"{next(n for n in names if names.count(n) > 1)!r}")
     seen = {}
     for g in sources + loads:
-        both = sorted(set(g.power_pins) & set(g.gnd_pins))
+        # Wildcards ("U1.*") are checked after expansion, in bind_setup.
+        both = sorted((set(g.power_pins) & set(g.gnd_pins)) - {p for p in g.power_pins
+                                                              if p.endswith(".*")})
         if both:
             raise SetupError(f"pin {both[0]!r} is in both power_pins and gnd_pins of {g.name!r}")
         for pin in g.power_pins + g.gnd_pins:
+            if pin.endswith(".*"):
+                continue
             if pin in seen:
                 raise SetupError(f"pin {pin!r} is used by both {seen[pin]!r} and {g.name!r}")
             seen[pin] = g.name
@@ -167,9 +179,19 @@ def parse_setup(text, path):
                          "[options] barrel_resistivity_ohm_m")
     tol_v = _number(options.get("tolerance_uv", 10), "[options] tolerance_uv") * 1e-6
     tol_rel = _number(options.get("tolerance_percent", 1), "[options] tolerance_percent") / 100
-    board = Path(data["board"])
-    board = board if board.is_absolute() else (path.parent / board)
-    return Setup(path, board, plating, sources, loads, rho, rho_barrel, tol_v, tol_rel)
+    def relative(key):
+        value = data[key]
+        if not isinstance(value, str) or not value.strip():
+            raise SetupError(f"{key!r} must be a path")
+        value = Path(value)
+        # Normalised (no "dir/.."), so messages and kicad-cli see plain paths.
+        return Path(os.path.normpath(value if value.is_absolute() else path.parent / value))
+
+    kicad_pcb = relative("kicad_pcb") if "kicad_pcb" in data else None
+    if kicad_pcb is not None and kicad_pcb.suffix != ".kicad_pcb":
+        raise SetupError(f"'kicad_pcb' must name a .kicad_pcb file, got {kicad_pcb.name!r}")
+    return Setup(path, relative("board"), plating, sources, loads, rho, rho_barrel, tol_v,
+                 tol_rel, kicad_pcb)
 
 
 def read_setup(path):
@@ -177,13 +199,51 @@ def read_setup(path):
     return parse_setup(path.read_text(encoding="utf-8"), path)
 
 
+def refresh_export(setup):
+    """Re-export the board with kicad-cli if ``kicad_pcb`` is set and newer; True if so."""
+    from .kicad import export_ipc2581, export_is_stale
+    if setup.kicad_pcb_path is None:
+        return False
+    if not setup.kicad_pcb_path.is_file():
+        raise SetupError(f"kicad_pcb {setup.kicad_pcb_path}: no such file")
+    if not export_is_stale(setup.kicad_pcb_path, setup.board_path):
+        return False
+    export_ipc2581(setup.kicad_pcb_path, setup.board_path)
+    return True
+
+
 def bind_setup(setup, board):
     """Check the setup against the board: pins exist, each group on one net, rails."""
     if not isinstance(board, BoardModel):
         raise ValueError("board must be a BoardModel")
-    nets = {}
+    nets, by_component = {}, {}
     for pad in board.pads:
-        nets.setdefault(f"{pad.component_ref}.{pad.pin_number}", set()).add(pad.net_id)
+        label = f"{pad.component_ref}.{pad.pin_number}"
+        nets.setdefault(label, set()).add(pad.net_id)
+        by_component.setdefault(pad.component_ref, set()).add(label)
+    expanded = []
+
+    def expand(group, field):
+        """The group's list with each "X.*" replaced by X's pins on the list's net."""
+        pins = getattr(group, field)
+        where = f"{group.name!r} {field}"
+        named = tuple(p for p in pins if not p.endswith(".*"))
+        wild = [p[:-2] for p in pins if p.endswith(".*")]
+        if not wild:
+            return group
+        if not named:
+            raise SetupError(f"{where}: a list with \"X.*\" needs at least one named pin, "
+                             "to say which net")
+        net = net_of(named, where)
+        out = list(named)
+        for component in wild:
+            if component not in by_component:
+                raise SetupError(f"{where}: no component {component!r} on the board")
+            more = sorted((p for p in by_component[component]
+                           if net in nets[p] and p not in out), key=_natural)
+            out += more
+            expanded.append((group.name, field, f"{component}.*", len(more)))
+        return replace(group, **{field: tuple(out)})
 
     def net_of(pins, where):
         missing = [p for p in pins if p not in nets]
@@ -199,15 +259,26 @@ def bind_setup(setup, board):
                              + "; ".join(f"{n}: {', '.join(ps)}" for n, ps in by_net.items()))
         return found.pop()
 
+    sources = tuple(expand(expand(s, "power_pins"), "gnd_pins") for s in setup.sources)
+    loads = tuple(expand(expand(g, "power_pins"), "gnd_pins") for g in setup.loads)
+    seen = {}
+    for g in sources + loads:
+        for pin in g.power_pins + g.gnd_pins:
+            if pin in seen and seen[pin] != g.name:
+                raise SetupError(f"pin {pin!r} is used by both {seen[pin]!r} and {g.name!r} "
+                                 "(after expanding \"*\")")
+            if pin in seen:
+                raise SetupError(f"pin {pin!r} is in both power_pins and gnd_pins of {g.name!r}")
+            seen[pin] = g.name
     gnd = {}
-    for g in setup.sources + setup.loads:
+    for g in sources + loads:
         gnd[g.name] = net_of(g.gnd_pins, f"{g.name!r} gnd_pins")
     if len(set(gnd.values())) > 1:
         raise SetupError("gnd_pins are on different nets: "
                          + "; ".join(f"{name!r} on {net!r}" for name, net in gnd.items()))
     gnd_net = next(iter(gnd.values()))
     rails = {}
-    for s in setup.sources:
+    for s in sources:
         net = net_of(s.power_pins, f"{s.name!r} power_pins")
         if net == gnd_net:
             raise SetupError(f"{s.name!r}: power_pins are on the GND net {gnd_net!r}")
@@ -215,20 +286,20 @@ def bind_setup(setup, board):
             raise SetupError(f"two sources on the power net {net!r} ({rails[net][0].name!r} and "
                              f"{s.name!r}); one source per power net")
         rails[net] = (s, [])
-    for load in setup.loads:
+    for load in loads:
         net = net_of(load.power_pins, f"{load.name!r} power_pins")
         if net not in rails:
             raise SetupError(f"{load.name!r}: its power_pins are on {net!r}, which has no source")
         rails[net][1].append(load)
     return BoundSetup(setup, gnd_net, tuple(Rail(net, gnd_net, s, tuple(ls))
-                                            for net, (s, ls) in rails.items()))
+                                            for net, (s, ls) in rails.items()), tuple(expanded))
 
 
 def _natural(label):
     return [int(t) if t.isdigit() else t for t in re.split(r"(\d+)", label)]
 
 
-def setup_template(board, board_name, *, min_pins=3, width=88):
+def setup_template(board, board_name, *, kicad_pcb_name=None, min_pins=3, width=88):
     """A setup file to fill in, listing the board's nets with at least ``min_pins`` pins."""
     pins = {}
     for pad in board.pads:
@@ -240,15 +311,18 @@ def setup_template(board, board_name, *, min_pins=3, width=88):
         f"# PDNLab DC setup for {board_name}. Fill in the blanks, delete what you do not need.",
         "# A source holds its power pins at 'volts'; a load draws 'amps'. Each lists its",
         "# power pins and its GND pins; the pins of one list are joined (one group).",
+        "# \"U1.*\" adds every pin of U1 on the list's net (name one pin to set the net).",
         "# Several rails: add one [[source]] per power net and its [[load]]s.",
         "",
+        *([f"kicad_pcb = {kicad_pcb_name!r}".replace("'", '"') + "   # re-exported when newer"]
+          if kicad_pcb_name else []),
         f"board = {board_name!r}".replace("'", '"'),
         "plating_um = 0                    # REQUIRED: barrel plating from your fab, e.g. 25",
         "",
         "[[source]]",
         'name = ""                         # e.g. "regulator"',
         "volts = 0                         # REQUIRED, e.g. 3.3",
-        "power_pins = []                   # e.g. [\"U5.2\", \"U5.3\"]",
+        "power_pins = []                   # e.g. [\"U5.2\", \"U5.3\"] or [\"J4.6\", \"J4.*\"]",
         "gnd_pins = []                     # e.g. [\"U5.4\"]",
         "",
         "[[load]]",

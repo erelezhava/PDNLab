@@ -125,10 +125,14 @@ def test_group_and_gnd_net_errors(arc):
     with pytest.raises(SetupError, match=r"'regulator' power_pins: pins on different nets: "
                                          r"\+3.3V: R1.1; GND: R2.2"):
         bind_setup(replace(base, sources=(mixed,), loads=()), arc)
-    off_gnd = Load("MCU", 0.5, ("R2.1",), ("R1.1",))       # its GND pin is on +3.3V
+    # GND pins on two nets needs more distinct pins than the arc board has: thermal board
+    # (GND on TP2.1, TP1.1, R1.2; +3V3 on R1.1).
+    thermal = read_ipc2581_board(FIXTURES / "thermal_relief" / "thermal_relief.xml")
+    source = Source("regulator", 3.3, ("R1.2",), ("TP2.1",))
+    off_gnd = Load("MCU", 0.5, ("TP1.1",), ("R1.1",))       # its GND pin is on +3V3
     with pytest.raises(SetupError, match=r"gnd_pins are on different nets: 'regulator' on "
-                                         r"'GND'; 'MCU' on '\+3.3V'"):
-        bind_setup(replace(base, loads=(off_gnd,)), arc)
+                                         r"'GND'; 'MCU' on '\+3V3'"):
+        bind_setup(replace(base, sources=(source,), loads=(off_gnd,)), thermal)
 
 
 def test_pin_in_both_lists_of_one_group():
@@ -185,7 +189,8 @@ def test_template_lists_nets_and_reads_back_once_filled(arc, tmp_path):
     filled = (text.replace("plating_um = 0 ", "plating_um = 25 ")
               .replace('name = ""                         # e.g. "regulator"', 'name = "reg"')
               .replace("volts = 0 ", "volts = 3.3 ")
-              .replace('power_pins = []                   # e.g. ["U5.2", "U5.3"]', 'power_pins = ["R1.1"]')
+              .replace('power_pins = []                   # e.g. ["U5.2", "U5.3"] or ["J4.6", "J4.*"]',
+                       'power_pins = ["R1.1"]')
               .replace('gnd_pins = []                     # e.g. ["U5.4"]', 'gnd_pins = ["R1.2"]')
               .replace('name = ""                         # e.g. "MCU"', 'name = "load"')
               .replace("amps = 0 ", "amps = 0.5 ")
@@ -225,3 +230,147 @@ def test_check_command(tmp_path, capsys):
     (tmp_path / "bad.toml").write_text(good.replace('"R2.1"', '"R9.1"'))
     assert main(["check", str(tmp_path / "bad.toml")]) == 1
     assert "pin 'R9.1' is not on the board" in capsys.readouterr().err
+
+
+# ---- Pin wildcards, the kicad_pcb key and the export from KiCad ----
+
+THERMAL = FIXTURES / "thermal_relief" / "thermal_relief.xml"
+
+
+@pytest.fixture(scope="module")
+def with_u1():
+    """The thermal board plus a U1 with U1.1 and U1.2 on GND and U1.3 on +3V3."""
+    from shapely.geometry import box
+    from pdnlab_dc.board import CopperFeature, PinPad
+    board = read_ipc2581_board(THERMAL)
+    pins = {"1": "GND", "2": "GND", "3": "+3V3"}
+    features = tuple(CopperFeature(f"pad:F.Cu:U1.{n}", net, "F.Cu", "pad",
+                                   box(0.19 + 0.001 * i, 0.09, 0.1905 + 0.001 * i, 0.0905))
+                     for i, (n, net) in enumerate(pins.items()))
+    pads = tuple(PinPad(f"pin:U1.{n}", "U1", n, net, (0.19 + 0.001 * i, 0.09), (f.id,), None)
+                 for i, ((n, net), f) in enumerate(zip(pins.items(), features)))
+    return replace(board, features=board.features + features, pads=board.pads + pads,
+                   component_layers=board.component_layers + (("U1", "F.Cu"),))
+
+
+WILD = """
+board = "x.xml"
+plating_um = 25
+[[source]]
+name = "reg"
+volts = 3.3
+power_pins = ["R1.1"]
+gnd_pins = ["TP2.1"]
+[[load]]
+name = "MCU"
+amps = 1
+power_pins = ["U1.3", "U1.*"]
+gnd_pins = ["U1.1", "U1.*"]
+"""
+
+
+def test_wildcard_adds_the_components_other_pins_on_the_lists_net(with_u1):
+    bound = bind_setup(parse(WILD), with_u1)
+    (load,) = bound.rails[0].loads
+    assert load.gnd_pins == ("U1.1", "U1.2")          # U1.3 is on +3V3, not GND
+    assert load.power_pins == ("U1.3",)               # nothing more of U1 on +3V3
+    assert set(bound.expanded) == {("MCU", "power_pins", "U1.*", 0), ("MCU", "gnd_pins", "U1.*", 1)}
+
+
+@pytest.mark.parametrize("old, new, message", [
+    ('gnd_pins = ["U1.1", "U1.*"]', 'gnd_pins = ["U1.*"]', r"'MCU' gnd_pins: a list with \"X.\*\" needs "
+                                                           r"at least one named pin"),
+    ('gnd_pins = ["U1.1", "U1.*"]', 'gnd_pins = ["U1.1", "U7.*"]', r"no component 'U7' on the board"),
+    ('gnd_pins = ["TP2.1"]', 'gnd_pins = ["TP2.1", "U1.*"]',
+     r"pin 'U1.1' is used by both 'reg' and 'MCU' \(after expanding"),
+])
+def test_wildcard_errors(with_u1, old, new, message):
+    assert WILD.count(old) == 1
+    with pytest.raises(SetupError, match=message):
+        bind_setup(parse(WILD.replace(old, new)), with_u1)
+
+
+def test_kicad_pcb_key(tmp_path):
+    setup = parse(GOOD.replace("plating_um = 25", 'kicad_pcb = "../brd/x.kicad_pcb"\nplating_um = 25'),
+                  tmp_path / "pdnlab" / "setup.toml")
+    assert setup.kicad_pcb_path == tmp_path / "brd" / "x.kicad_pcb"       # normalised
+    assert parse(GOOD).kicad_pcb_path is None
+    with pytest.raises(SetupError, match=r"'kicad_pcb' must name a .kicad_pcb file"):
+        parse(GOOD.replace("plating_um = 25", 'kicad_pcb = "x.xml"\nplating_um = 25'))
+
+
+@pytest.fixture
+def fake_kicad(tmp_path, monkeypatch):
+    """A stand-in kicad-cli: writes the arc board's export to --output, counts its calls."""
+    log = tmp_path / "kicad-calls.txt"
+    script = tmp_path / "kicad-cli"
+    script.write_text(f"""#!/bin/sh
+echo "$@" >> "{log}"
+while [ $# -gt 0 ]; do
+  if [ "$1" = "--output" ]; then out="$2"; fi
+  shift
+done
+cp "{ARC}" "$out"
+""")
+    script.chmod(0o755)
+    monkeypatch.setenv("PDNLAB_KICAD_CLI", str(script))
+    return log
+
+
+def test_export_and_refresh_when_the_board_is_newer(tmp_path, fake_kicad):
+    import os
+    from pdnlab_dc.setup import refresh_export
+    pcb = tmp_path / "x.kicad_pcb"
+    pcb.write_text("(kicad_pcb)")
+    text = GOOD.replace(f'board = "../fixtures/arc_track/{ARC.name}"',
+                        'kicad_pcb = "../x.kicad_pcb"\nboard = "x.xml"')
+    (tmp_path / "pdnlab").mkdir()
+    setup = parse(text, tmp_path / "pdnlab" / "setup.toml")
+    assert refresh_export(setup) is True                      # no export yet: made
+    assert setup.board_path.read_bytes() == ARC.read_bytes()
+    calls = fake_kicad.read_text().splitlines()
+    assert calls == [f"pcb export ipc2581 --version C --units mm --output {setup.board_path} {pcb}"]
+    assert refresh_export(setup) is False                     # export newer: kept
+    later = setup.board_path.stat().st_mtime + 10
+    os.utime(pcb, (later, later))                             # board edited after the export
+    assert refresh_export(setup) is True
+    assert len(fake_kicad.read_text().splitlines()) == 2
+
+
+def test_init_from_a_kicad_board_and_check_re_exports(tmp_path, fake_kicad, capsys):
+    import os
+    project = tmp_path / "my project"
+    project.mkdir()
+    pcb = project / "brd.kicad_pcb"
+    pcb.write_text("(kicad_pcb)")
+    assert main(["init", str(pcb), "--min-pins", "2"]) == 0
+    folder = project / "pdnlab"
+    assert sorted(p.name for p in folder.iterdir()) == ["brd.xml", "setup.toml"]
+    text = (folder / "setup.toml").read_text()
+    assert 'kicad_pcb = "../brd.kicad_pcb"' in text and 'board = "brd.xml"' in text
+    filled = GOOD.replace(f'board = "../fixtures/arc_track/{ARC.name}"',
+                          'kicad_pcb = "../brd.kicad_pcb"\nboard = "brd.xml"')
+    (folder / "setup.toml").write_text(filled)
+    later = (folder / "brd.xml").stat().st_mtime + 10
+    os.utime(pcb, (later, later))
+    capsys.readouterr()
+    assert main(["check", str(folder / "setup.toml")]) == 0
+    assert "re-exported" in capsys.readouterr().out
+
+
+def test_kicad_cli_missing_or_failing(tmp_path, monkeypatch):
+    from pdnlab_dc.kicad import KicadError, export_ipc2581
+    pcb = tmp_path / "x.kicad_pcb"
+    pcb.write_text("(kicad_pcb)")
+    monkeypatch.delenv("PDNLAB_KICAD_CLI", raising=False)
+    monkeypatch.setenv("PATH", str(tmp_path))                 # no kicad-cli there
+    with pytest.raises(KicadError, match="kicad-cli not found"):
+        export_ipc2581(pcb, tmp_path / "x.xml")
+    failing = tmp_path / "bad-cli"
+    failing.write_text("#!/bin/sh\necho 'cannot open board' >&2\nexit 3\n")
+    failing.chmod(0o755)
+    monkeypatch.setenv("PDNLAB_KICAD_CLI", str(failing))
+    with pytest.raises(KicadError, match=r"export failed \(exit 3\):\ncannot open board"):
+        export_ipc2581(pcb, tmp_path / "x.xml")
+    with pytest.raises(KicadError, match="no such KiCad board"):
+        export_ipc2581(tmp_path / "missing.kicad_pcb", tmp_path / "x.xml")
