@@ -2532,3 +2532,49 @@ Not run or not covered: pins with several pads, a hole edge partly inside a
 contact pad on a real board, temperature, contact resistance at rims, KiCad 11.
 
 Stopped after the network: no setup file, refinement loop, CLI or result files.
+
+## 2026-11-22 — Decisions before the setup file (increment 12) and output (13)
+
+**Result / Recommendation: decided by Erekle (2026-11-22), before any code. A
+simulation is described in a TOML setup file by pins: sources and loads, each
+with a group of power pins and a group of GND pins. Power and GND are both
+simulated. Results are voltage and current-density maps per layer (VTU for
+ParaView and PNG pictures) plus a text/CSV summary. Remote sense comes later.**
+
+Setup file (increment 12):
+
+1. **TOML**: readable, with comments; Python reads it without a library
+   (`tomllib`).
+2. **Sources and loads by pins** (a connector, a regulator, a capacitor ...). A
+   source has a set voltage, a load a current; each has `power_pins` and
+   `gnd_pins`.
+3. **Power and GND both simulated.** In DC the two nets do not affect each other,
+   so each is its own network with the same currents: on the power net the
+   source pins are held at the set voltage and the loads draw their current; on
+   GND the source's GND pins are the 0 V reference and the loads return the same
+   current. The voltage a load sees is V(power at the load) − V(GND at the
+   load); results give the power drop, the GND rise and the total per load.
+4. **Pin groups are equipotential**: all pins of one group joined, like an ideal
+   die or connector; the group's current divides between its pins by itself and
+   the result shows each pin's share. An equal split per pin was rejected: it
+   ignores where the copper is easier.
+5. **Nets are found from the pins**: the power pins' net is the power net, the
+   GND pins' net is GND; a group whose pins are on different nets is an error.
+6. Plating thickness is required (2026-11-21); resistivity and the refinement
+   tolerance are optional (defaults: 1.724e-8 Ω·m, release gate 5).
+7. **Remote sense (sense nets and their position) later**, after release 0.1;
+   the file format leaves room to add it to a source.
+
+Output (increment 13):
+
+- Maps per layer, for power and GND: voltage (drop from the source) and current
+  density (magnitude and direction, A/mm², sheet current / copper thickness),
+  as VTU files for ParaView and as PNG pictures for a quick look.
+- A text/CSV summary: per load the voltage it sees, split into power drop and GND
+  rise; per pin of a group its current; per via and pin barrel its current,
+  highest first; the highest current density per layer and where; power loss per
+  layer and in barrels; the conservation checks; the refinement check's change.
+- Current density is less accurate than voltage (constant per linear triangle)
+  and is unbounded in theory at pad and inner copper corners: its peak there
+  grows with refinement. Peaks are reported with that note, together with the
+  density averaged over a small area, which converges.
