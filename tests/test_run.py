@@ -111,9 +111,11 @@ def test_pin_currents_and_current_density(strips):
 
 def test_refinement_error_when_it_does_not_settle(strips):
     board, bound, _ = strips
-    tight = replace(bound, setup=replace(bound.setup, tolerance_v=0.0, tolerance_rel=0.0))
-    # Even an exact case changes by roundoff; with zero tolerance and one refinement it
-    # cannot be accepted.
+    # A tolerance below zero can never be met (a change is at least 0), so the check must
+    # raise after one refinement. Zero was not enough: on an exact case the change can be
+    # exactly 0 (it was on CI once), which settles. The setup file refuses negative values;
+    # the test sets one directly.
+    tight = replace(bound, setup=replace(bound.setup, tolerance_v=-1e-12, tolerance_rel=0.0))
     with pytest.raises(RefinementError, match=r"rail '\+3V3': the voltage at load 'chip' still changed"):
         simulate(tight, board, clean_copper(board, 25e-6), max_refinements=1)
 
