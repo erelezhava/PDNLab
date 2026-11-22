@@ -690,13 +690,74 @@ def test_bad_drill_spans_raise(old, new, message):
         parse_ipc2581_copper(export().replace(old.encode(), new.encode()))
 
 
-def test_routed_slot_layer_with_content_raises():
-    # KiCad writes oblong holes to a layerFunction="ROUT" layer as SlotCavity elements.
-    slot_layer = ('<Layer name="F.Cu_B.Cu_SLOT" layerFunction="ROUT">'
-                  '<Span fromLayer="F.Cu" toLayer="B.Cu"/></Layer>')
-    data = export(step_extra=layer_feature("F.Cu_B.Cu_SLOT", '<Set><SlotCavity name="S1"/></Set>'))
-    with pytest.raises(ValueError, match="routed slots are not supported"):
-        parse_ipc2581_copper(data.replace(LAYERS.encode(), (LAYERS + slot_layer).encode()))
+# Slots as KiCad 10 wrote them for the public Jetson Nano baseboard: a ROUT layer
+# spanning the board, a Set per slot with its net (no padstack name), a SlotCavity with
+# a Location, an optional Xform rotation and an Oval width x height.
+SLOT_LAYER = '<Layer name="F.Cu_B.Cu_1" layerFunction="ROUT"><Span fromLayer="F.Cu" toLayer="B.Cu"/></Layer>'
+SLOT_PAD = ('<Set net="PWR"><Pad padstackDefRef="J"><Location x="50" y="-20"/>'
+            '<StandardPrimitiveRef id="R1"/><PinRef componentRef="J4" pin="1"/></Pad></Set>')
+
+
+def slot_cavity(rotation="90.0", width="3.0", height="1.0", status="PLATED", tol="0.0",
+                shape=None, name="SLOT1"):
+    xform = f'<Xform rotation="{rotation}"/>' if rotation is not None else ""
+    shape = shape or f'<Oval width="{width}" height="{height}"/>'
+    return (f'<Set net="PWR"><SlotCavity name="{name}" platingStatus="{status}" plusTol="{tol}" '
+            f'minusTol="0.0"><Location x="50" y="-20"/>{xform}{shape}</SlotCavity></Set>')
+
+
+def slot_export(slots=None, pads=True):
+    slots = slot_cavity() if slots is None else slots
+    data = export(f_cu=F_CU + (SLOT_PAD if pads else ""), b_cu=B_CU + (SLOT_PAD if pads else ""),
+                  step_extra=layer_feature("F.Cu_B.Cu_1", slots))
+    return data.replace(LAYERS.encode(), (LAYERS + SLOT_LAYER).encode())
+
+
+def test_slots_are_read_as_oblong_drills_linked_to_their_pads():
+    result = parse_ipc2581_copper(slot_export())
+    slot = {d.id: d for d in result.drills}["drill:SLOT1"]
+    assert (slot.kind, slot.plating, slot.start_layer_id, slot.end_layer_id) == ("pin", "plated", "F.Cu", "B.Cu")
+    assert slot.position_m == pytest.approx((0.050, 0.020))
+    assert (slot.diameter_m, slot.slot_length_m) == pytest.approx((1e-3, 3e-3))
+    assert slot.slot_angle_deg == 90.0 and slot.straight_m == pytest.approx(2e-3)
+    linked = sorted(f.id for f in result.pads if f.drill_id == "drill:SLOT1")
+    assert linked == ["pad:B.Cu:J4.1", "pad:F.Cu:J4.1"]
+
+
+@pytest.mark.parametrize("rotation,width,height,angle,length", [
+    (None, "3.0", "1.0", 0.0, 3e-3),      # along x
+    ("30.0", "3.0", "1.0", 150.0, 3e-3),  # counter-clockwise in IPC (Y up) is clockwise stored
+    (None, "1.0", "3.0", 90.0, 3e-3),     # taller than wide: the long axis is y
+    ("270.0", "3.0", "1.0", 90.0, 3e-3),
+    (None, "1.0", "1.0", 0.0, None),      # as wide as long: a round hole
+])
+def test_slot_angle_and_length(rotation, width, height, angle, length):
+    result = parse_ipc2581_copper(slot_export(slot_cavity(rotation, width, height)))
+    slot = {d.id: d for d in result.drills}["drill:SLOT1"]
+    assert slot.slot_angle_deg == pytest.approx(angle)
+    assert slot.slot_length_m == (None if length is None else pytest.approx(length))
+    assert slot.diameter_m == pytest.approx(1e-3)
+
+
+@pytest.mark.parametrize("slots,message,pads", [
+    (slot_cavity(tol="0.1"), "nonzero plusTol", True),
+    (slot_cavity(status="VIA"), "slot platingStatus 'VIA'", True),
+    (slot_cavity(shape='<Circle diameter="1"/>'), "found Circle", True),
+    (slot_cavity().replace("<Oval", '<Oval extra="1"'), "Oval must have attributes", True),
+    ('<Set net="PWR"><Hole name="H9" diameter="1" platingStatus="PLATED" plusTol="0" minusTol="0" '
+     'x="50" y="-20"/></Set>', "exactly one SlotCavity", True),
+    (slot_cavity(), "plated slot with no pad copper", False),
+])
+def test_slot_errors(slots, message, pads):
+    with pytest.raises(ValueError, match=message):
+        parse_ipc2581_copper(slot_export(slots, pads=pads))
+
+
+def test_a_slot_not_through_the_board_raises():
+    data = slot_export().replace(b'name="F.Cu_B.Cu_1" layerFunction="ROUT"><Span fromLayer="F.Cu" toLayer="B.Cu"/>',
+                                 b'name="F.Cu_B.Cu_1" layerFunction="ROUT"><Span fromLayer="F.Cu" toLayer="F.Cu"/>')
+    with pytest.raises(ValueError, match="not through the whole board"):
+        parse_ipc2581_copper(data)
 
 
 # Copper text and footprint graphics with no net, in the forms KiCad 10 wrote for the
@@ -794,3 +855,13 @@ def test_a_hollow_graphic_outline_is_only_its_stroke():
     assert logo.geometry.area * 1e6 == pytest.approx(exact, rel=1e-3)
     assert len(logo.geometry.interiors) == 1
     assert not logo.geometry.contains(Point(0.071, 0.002))      # the square's centre
+
+
+def test_a_slot_links_only_pads_of_its_own_net():
+    # A pad of another net at the slot's position on B.Cu is not the slot's pad (cleanup
+    # then reports the short); the slot links J4.1 on F.Cu only.
+    other = SLOT_PAD.replace('net="PWR"', 'net="GND"').replace('"J4" pin="1"', '"J5" pin="1"')
+    data = export(f_cu=F_CU + SLOT_PAD, b_cu=B_CU + other,
+                  step_extra=layer_feature("F.Cu_B.Cu_1", slot_cavity()))
+    result = parse_ipc2581_copper(data.replace(LAYERS.encode(), (LAYERS + SLOT_LAYER).encode()))
+    assert sorted(f.id for f in result.pads if f.drill_id == "drill:SLOT1") == ["pad:F.Cu:J4.1"]

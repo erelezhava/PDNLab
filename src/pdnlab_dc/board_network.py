@@ -265,15 +265,17 @@ def build_net_network(board, clean, mesh, pins=(), *, groups=None,
             name = f"barrel:{drill_id}:{upper}-{lower}"
             network.add_barrel(name, endpoint[(drill_id, upper)], endpoint[(drill_id, lower)],
                                length=length, inner_radius=inner, outer_radius=outer,
-                               resistivity=rho_barrel)
+                               resistivity=rho_barrel, straight=d.straight_m)
             barrels.append(BarrelLink(name, drill_id, upper, lower,
-                                      barrel_resistance(length, inner, outer, rho_barrel)))
+                                      barrel_resistance(length, inner, outer, rho_barrel,
+                                                        d.straight_m)))
     assumptions = (
         f"Sheet resistivity {rho:.6g} Ω·m and barrel resistivity {rho_barrel:.6g} Ω·m "
         "(default: annealed copper at 20 °C); no temperature dependence.",
         f"Barrels: plating {clean.plating_m * 1e6:.6g} µm, copper from the finished radius "
-        "to the drilled wall, length between layer centres; no contact or 3D spreading "
-        "resistance at the rims.",
+        "to the drilled wall (for a slot: its finished outline to its drilled wall, two "
+        "half rings and two flat sides), length between layer centres; no contact or 3D "
+        "spreading resistance at the rims.",
         "Pin contacts are equipotential over the whole pad; through-hole pins on their "
         "component's side.",
     )

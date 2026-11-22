@@ -187,7 +187,8 @@ class Network:
         """Add a positive lumped resistor; current is reported a -> b."""
         self._add_branch(name, a, b, resistance)
 
-    def add_barrel(self, name, a, b, *, length, inner_radius, outer_radius, resistivity):
+    def add_barrel(self, name, a, b, *, length, inner_radius, outer_radius, resistivity,
+                   straight=0.0):
         """Join distinct sheet rims using the validated axial barrel formula.
 
         length is layer-centre separation. The caller supplies the two contacted
@@ -198,7 +199,7 @@ class Network:
                 or self._terminals[a].sheet == self._terminals[b].sheet):
             raise ValueError("barrel endpoints must be rim terminals on distinct sheets")
         self._add_branch(name, a, b, barrel_resistance(
-            length, inner_radius, outer_radius, resistivity))
+            length, inner_radius, outer_radius, resistivity, straight))
 
     def prepare(self, source_terminals):
         """Freeze composition and factor once. Source membership is fixed thereafter."""

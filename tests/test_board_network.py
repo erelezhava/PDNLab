@@ -160,3 +160,47 @@ def test_component_sides_are_read_from_the_export():
         replace(board, component_layers=(("R1", "F.Cu"),))
     with pytest.raises(ValueError, match="outer copper layer"):
         replace(board, component_layers=(("R1", "In1.Cu"), ("TP1", "F.Cu"), ("TP2", "F.Cu")))
+
+
+def test_slot_barrel_against_the_exact_answer(thermal):
+    # A plated slot 4 x 1 mm, its long axis at 30 degrees, through the board. J1's pad on
+    # F.Cu holds it (the pin's contact, on its component's side); on B.Cu the slot passes
+    # through J2's square SMD pad, so its B.Cu edge lies in J2's contact. Both ends
+    # are equipotential: the resistance between the pins is the slot barrel alone, the
+    # round barrel's ring halves joined by two flat sides of plating. 4 mm is long enough
+    # that the hole is larger than pi * d^2, the round-hole bound the mesh used to apply.
+    base = thermal[0]
+    cx, cy, d, length, angle = 0.2, 0.1, 1.0e-3, 4.0e-3, 30.0
+    features = (
+        CopperFeature("pad:F.Cu:J1.1", "GND", "F.Cu", "pad", Point(cx, cy).buffer(4e-3, quad_segs=64),
+                      drill_id="drill:SLOT1"),
+        CopperFeature("pad:B.Cu:J2.1", "GND", "B.Cu", "pad", box(cx - 4e-3, cy - 4e-3, cx + 4e-3, cy + 4e-3)))
+    pads = (PinPad("pin:J1.1", "J1", "1", "GND", (cx, cy), ("pad:F.Cu:J1.1",), "drill:SLOT1"),
+            PinPad("pin:J2.1", "J2", "1", "GND", (cx, cy), ("pad:B.Cu:J2.1",), None))
+    slot = DrillFeature("drill:SLOT1", (cx, cy), d, "plated", "F.Cu", "B.Cu", "pin",
+                        slot_length_m=length, slot_angle_deg=angle)
+    board = replace(base, features=features, pads=pads, drills=(slot,),
+                    component_layers=(("J1", "F.Cu"), ("J2", "B.Cu")))
+    clean = clean_copper(board, PLATING)
+    # The hole cut on F.Cu: a stadium of half-width d/2 + plating along the slot's axis.
+    a = d / 2 + PLATING
+    (piece,) = [p for p in clean.pieces if p.layer_id == "F.Cu"]
+    (hole,) = [Polygon(r) for r in piece.geometry.interiors]
+    exact = math.pi * a ** 2 + (length - d) * 2 * a      # polygon inside, 1 µm chord rule
+    assert hole.area == pytest.approx(exact, rel=1e-3) and hole.area < exact
+    along = (math.cos(math.radians(angle)), math.sin(math.radians(angle)))
+    reach = length / 2 + PLATING - 1e-5
+    assert hole.contains(Point(cx + reach * along[0], cy + reach * along[1]))
+    assert not hole.contains(Point(cx - reach * along[1], cy + reach * along[0]))   # across
+    mesh = mesh_net(clean, board, "GND")
+    net = build_net_network(board, clean, mesh, ["J1.1", "J2.1"])
+    (barrel,) = net.barrels
+    layers = {layer.id: layer for layer in board.layers}
+    barrel_length = layers["B.Cu"].z_m - layers["F.Cu"].z_m
+    wall = math.pi * (a ** 2 - (d / 2) ** 2) + 2 * (length - d) * PLATING
+    expected = COPPER_RESISTIVITY_OHM_M * barrel_length / wall
+    assert barrel.resistance_ohm == pytest.approx(expected, rel=1e-12)
+    assert expected < 0.6 * barrel_resistance(barrel_length, d / 2, a, COPPER_RESISTIVITY_OHM_M)
+    r, _ = drop(net, "J1.1", "J2.1")
+    assert r == pytest.approx(expected, rel=1e-6)
+    assert set(net.network._terminals) == {"pin:J1.1", "pin:J2.1"}

@@ -156,8 +156,10 @@ def _hole_ring(piece, cut, drills):
         if drill.plating != "plated":
             continue
         centre = Point(drill.position_m)
+        # The edge around the drill's centre, no larger than 4 times the hole's own area
+        # (round or slot), so a larger opening around it is not taken for the hole.
         matches = [k for k, ring in enumerate(piece.interiors) if Polygon(ring).contains(centre)
-                   and Polygon(ring).area < math.pi * (drill.diameter_m) ** 2]
+                   and Polygon(ring).area < 4 * drill.area_m2]
         if len(matches) != 1:
             raise ValueError(f"{drill_id}: expected one hole edge in its piece, found "
                              f"{len(matches)}")
