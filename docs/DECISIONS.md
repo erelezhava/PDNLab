@@ -2228,3 +2228,39 @@ Decisions, with d the exported hole diameter and t the plating thickness:
 
 Not decided here: per-hole or per-size plating (one board-wide t for now),
 drill tolerances (KiCad writes none), and annular-ring checks.
+
+## 2026-11-22 — Decisions before copper cleanup (increment 9)
+
+**Result / Recommendation: decided by Erekle (2026-11-22), before any cleanup
+code. Overlapping copper of two nets raises; copper with no net is kept as its
+own group outside the DC solve; cleanup splits each net and layer into pieces
+with IDs, and an island on a simulated net is an error before solving
+(detected in the contact model increment).**
+
+1. **Copper of two different nets overlapping on one layer raises.** It is a
+   short on the real board; merging per net would keep the two nets apart and
+   give a wrong result silently. The error names both nets, the layer, the
+   location and the overlap area. Net ties (footprints that join two nets on
+   purpose) raise too, with a message that they are not supported yet; decide
+   how to declare them when a real board needs one. The check uses a small area
+   limit, not any contact: shapes only touching at a point do not raise.
+   Outline approximation is 1 µm against clearances of about 0.1 mm or more, so
+   correctly spaced copper never appears to overlap.
+2. **Copper with no net (`net_id=None`) is kept as its own group**, merged per
+   layer, outside the DC solve, and reported (count and area). Nothing is
+   deleted: Phase 4 (thermal) needs it. If it overlaps net copper, cleanup
+   raises as in 1, because the net it belongs to is unknown.
+3. **Islands.** Cleanup splits each net's copper on each layer into its separate
+   pieces, each with an ID and the features and holes it contains; several
+   pieces per net and layer are normal (joined through vias and planes). Whether
+   a piece is an island needs the barrels joining layers, so it is decided in
+   the contact model increment (11): **a piece of a simulated net not connected
+   to the rest of that net through copper, vias or pin barrels is an error, and
+   nothing is simulated.** The error names the net, the layer, the location and
+   the area. Pieces on nets that are not simulated are not checked. This also
+   stops a run on a board with unrouted connections of a simulated net. The
+   simulated nets are chosen in the setup file (increment 12).
+
+Also from 2026-11-21: plated holes are cut at finished radius + plating
+(plating a required input), non-plated holes at their radius. Until the setup
+file exists, cleanup takes plating as a function argument.

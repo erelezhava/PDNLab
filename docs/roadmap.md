@@ -5,7 +5,7 @@ measured results live in [DECISIONS.md](DECISIONS.md); the full plan, gates and
 estimates in [project-plan.md](project-plan.md). Update this file after each
 increment, in the same commit or pull request.
 
-Last updated: 2026-11-21, after the hole cutting radius decision.
+Last updated: 2026-11-22, after the copper cleanup decisions.
 
 ## Where we are
 
@@ -43,9 +43,9 @@ after release 0.1.
 | 6 | Drill holes: `DrillFeature` records linked to pad and via copper (`ipc2581_copper.py`) | Merged, PR #19; public pad board 5/5 and real board 218/218 holes match KiCad's file. Holes are recorded, not cut (cutting and barrels in 9 and 11) |
 | 7 | Thermal reliefs: public test board, fills meeting pads checked against KiCad's plot | Merged, PR #21; no reader change; public thermal board 12/12 pad and via connections and all fills match KiCad |
 | 8 | Assemble a full `BoardModel` from the readers (`ipc2581_board.py`, `PinPad` records) | Merged, PR #23; public boards 26/26 and private board 355/355 pins match KiCad's board file |
-| 9 | Copper cleanup per net and layer (union of fills, tracks, pads; plated holes cut at finished radius + setup plating) | Next |
+| 9 | Copper cleanup per net and layer (union into pieces with IDs; plated holes cut at finished radius + plating; overlapping nets raise) | In progress: decisions logged 2026-11-22 |
 | 10 | Meshing real copper with Gmsh (start from experiment 8's settings) | Planned |
-| 11 | Via and pin contact model on real boards (rims and barrels, setup plating) | Planned |
+| 11 | Via and pin contact model on real boards (rims and barrels, setup plating); islands on simulated nets raise | Planned |
 | 12 | Setup file: sources, loads, rails, material and plating | Planned |
 | 13 | Solve, VTU output for ParaView, CLI | Planned |
 | 14 | Release 0.1 gate run on the real test board | Planned |
@@ -109,3 +109,7 @@ decided when it starts.
   holes are cut at finished radius + plating, the barrel added by the contact
   model; plating thickness is a required setup input, no default; non-plated
   holes cut at their radius.
+- Cleanup (2026-11-22): overlapping copper of two nets raises (net ties too, for
+  now); copper with no net kept as its own group outside the DC solve; each net
+  and layer split into pieces with IDs; an island on a simulated net is an error
+  (checked in increment 11, once barrels join layers).
