@@ -23,7 +23,7 @@ Not done here: which pins are sources and loads (the setup file, increment 12),
 temperature, solving, the refinement loop.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import numpy as np
 
@@ -34,6 +34,7 @@ from .network import Network
 from .vias import barrel_resistance
 
 COPPER_RESISTIVITY_OHM_M = 1.724e-8    # annealed copper (IACS) at 20 °C
+LINK_OHM = 1e-6     # joins one group's terminals on different layers (Erekle, 2026-11-22)
 
 
 @dataclass(frozen=True)
@@ -66,6 +67,10 @@ class NetNetwork:
     barrel_resistivity_ohm_m: float
     plating_m: float
     assumptions: tuple[str, ...]
+    pin_nodes: dict = None      # pin label -> (layer id, its pad's node indices)
+    groups: dict = None         # terminal name -> pin labels joined in it
+    rim_terminals: dict = None  # (drill id, layer id) -> terminal its barrel joins
+    links: tuple = ()           # (link name, terminal, terminal): a group across layers
 
 
 class IslandError(ValueError):
@@ -89,8 +94,9 @@ def _where(geometry):
     return f"({1000 * p.x:.3f}, {1000 * p.y:.3f}) mm"
 
 
-def _check_islands(clean, mesh, rim_layers, cut):
-    """Raise IslandError unless the net's pieces, joined by barrels, are one group."""
+def _check_islands(clean, mesh, rim_layers, cut, joined=()):
+    """Raise IslandError unless the net's pieces, joined by barrels and by the pins of
+    each pin group (joined through the part: a connector, a die), are one group."""
     pieces = {p.id: p for p in clean.pieces if p.net_id == mesh.net_id}
     parent = {pid: pid for pid in pieces}
 
@@ -102,6 +108,11 @@ def _check_islands(clean, mesh, rim_layers, cut):
 
     for drill_id, layers in rim_layers.items():
         ends = [cut[(drill_id, layer)] for layer in layers]
+        for a, b in zip(ends, ends[1:]):
+            parent[root(a)] = root(b)
+    holder = {f: pid for pid, p in pieces.items() for f in p.feature_ids}
+    for features in joined:
+        ends = [holder[f] for f in features if f in holder]
         for a, b in zip(ends, ends[1:]):
             parent[root(a)] = root(b)
     groups = {}
@@ -122,9 +133,12 @@ def _check_islands(clean, mesh, rim_layers, cut):
                       + "; ".join(lines[:10]) + ("; ..." if len(lines) > 10 else ""))
 
 
-def build_net_network(board, clean, mesh, pins=(), *, resistivity=COPPER_RESISTIVITY_OHM_M,
-                      barrel_resistivity=None):
-    """NetNetwork for ``mesh``'s net, with an equipotential contact for each pin label."""
+def build_net_network(board, clean, mesh, pins=(), *, groups=None,
+                      resistivity=COPPER_RESISTIVITY_OHM_M, barrel_resistivity=None):
+    """NetNetwork for ``mesh``'s net: an equipotential contact for each pin label in
+    ``pins`` (terminal ``pin:<label>``) and one for each group in ``groups`` ({name: pin
+    labels}, terminal ``group:<name>``): a group's pins are joined, like an ideal die or
+    connector, and must be on one layer."""
     if not isinstance(board, BoardModel):
         raise ValueError("board must be a BoardModel")
     if not isinstance(clean, CleanCopper):
@@ -150,7 +164,6 @@ def build_net_network(board, clean, mesh, pins=(), *, resistivity=COPPER_RESISTI
             if drills[drill_id].plating == "plated":
                 rim_layers.setdefault(drill_id, []).append(L.layer_id)
     rim_layers = {d: ls for d, ls in rim_layers.items() if len(ls) >= 2}
-    _check_islands(clean, mesh, rim_layers, cut)
 
     network = Network()
     conductance = {}
@@ -158,55 +171,82 @@ def build_net_network(board, clean, mesh, pins=(), *, resistivity=COPPER_RESISTI
         conductance[L.layer_id] = layers[L.layer_id].thickness_m / rho
         network.add_sheet(L.layer_id, L.nodes, L.triangles, conductance[L.layer_id])
 
-    # Pin contacts: the whole pad copper on its contact layer.
-    contacts, contact_nodes = {}, {}
-    for label in pins:
-        component, _, number = str(label).rpartition(".")
-        mine = [p for p in board.pads if (p.component_ref, p.pin_number) == (component, number)]
-        if not mine:
-            raise ValueError(f"pin {label!r}: no such pin on the board")
-        if len(mine) > 1:
-            raise ValueError(f"pin {label!r}: a pin with {len(mine)} pads is not supported yet")
-        (pad,) = mine
-        if pad.net_id != net:
-            raise ValueError(f"pin {label!r} is on net {pad.net_id!r}, not {net!r}")
-        features = {f.id: f for f in board.features if f.id in pad.copper_feature_ids}
-        if pad.drill_id is None:
-            (feature,) = features.values()
-        else:
-            if pad.component_ref not in sides:
-                raise ValueError(f"pin {label!r}: the side its component is mounted on is unknown")
-            on_side = [f for f in features.values() if f.layer_id == sides[pad.component_ref]]
-            if len(on_side) != 1:
-                raise ValueError(f"pin {label!r}: no pad copper on its component's side "
-                                 f"{sides[pad.component_ref]}")
-            (feature,) = on_side
-        L = meshes.get(feature.layer_id)
-        if L is None or feature.id not in L.pad_ids:
-            raise ValueError(f"pin {label!r}: its pad {feature.id} is not in the mesh")
-        nodes = np.unique(L.triangles[L.pad_of == L.pad_ids.index(feature.id)])
-        if nodes.size == 0:
-            raise ValueError(f"pin {label!r}: its pad {feature.id} has no triangles")
-        contacts[str(label)] = PinContact(str(label), pad.id, feature.layer_id, f"pin:{label}")
-        contact_nodes[str(label)] = (feature.layer_id, nodes)
+    # Pin contacts: the whole pad copper on its contact layer; groups join their pins.
+    wanted = [(f"pin:{label}", (str(label),)) for label in pins]
+    wanted += [(f"group:{name}", tuple(map(str, labels))) for name, labels in (groups or {}).items()]
+    contacts, pin_nodes, terminal_nodes, members, links, contact_feature = {}, {}, {}, {}, [], {}
+    for terminal, labels in wanted:
+        if not labels:
+            raise ValueError(f"{terminal}: a group needs at least one pin")
+        for label in labels:
+            if label in contacts:
+                raise ValueError(f"pin {label!r} is in two contacts")
+            component, _, number = label.rpartition(".")
+            mine = [p for p in board.pads if (p.component_ref, p.pin_number) == (component, number)]
+            if not mine:
+                raise ValueError(f"pin {label!r}: no such pin on the board")
+            if len(mine) > 1:
+                raise ValueError(f"pin {label!r}: a pin with {len(mine)} pads is not supported yet")
+            (pad,) = mine
+            if pad.net_id != net:
+                raise ValueError(f"pin {label!r} is on net {pad.net_id!r}, not {net!r}")
+            features = {f.id: f for f in board.features if f.id in pad.copper_feature_ids}
+            if pad.drill_id is None:
+                (feature,) = features.values()
+            else:
+                if pad.component_ref not in sides:
+                    raise ValueError(f"pin {label!r}: the side its component is mounted on is unknown")
+                on_side = [f for f in features.values() if f.layer_id == sides[pad.component_ref]]
+                if len(on_side) != 1:
+                    raise ValueError(f"pin {label!r}: no pad copper on its component's side "
+                                     f"{sides[pad.component_ref]}")
+                (feature,) = on_side
+            L = meshes.get(feature.layer_id)
+            if L is None or feature.id not in L.pad_ids:
+                raise ValueError(f"pin {label!r}: its pad {feature.id} is not in the mesh")
+            nodes = np.unique(L.triangles[L.pad_of == L.pad_ids.index(feature.id)])
+            if nodes.size == 0:
+                raise ValueError(f"pin {label!r}: its pad {feature.id} has no triangles")
+            contacts[label] = PinContact(label, pad.id, feature.layer_id, terminal)
+            pin_nodes[label] = (feature.layer_id, nodes)
+            contact_feature[label] = feature.id
+        # One terminal per layer the group's pins are on; the first (in stack order) keeps the
+        # group's name, the others are "<name>@<layer>" and are joined to it by LINK_OHM.
+        layers_used = sorted({pin_nodes[label][0] for label in labels}, key=order.get)
+        for k, layer_id in enumerate(layers_used):
+            name = terminal if k == 0 else f"{terminal}@{layer_id}"
+            mine = tuple(label for label in labels if pin_nodes[label][0] == layer_id)
+            terminal_nodes[name] = (layer_id, np.unique(np.concatenate(
+                [pin_nodes[label][1] for label in mine])))
+            members[name] = mine
+            for label in mine:
+                contacts[label] = replace(contacts[label], terminal=name)
+            if k:
+                links.append((f"link:{terminal.split(':', 1)[1]}:{layers_used[0]}-{layer_id}",
+                              terminal, name))
+
+    # A group's pins are joined through the part (connector, die): their pieces count as one.
+    _check_islands(clean, mesh, rim_layers, cut,
+                   [[contact_feature[str(label)] for label in labels]
+                    for labels in (groups or {}).values()])
 
     # Rim endpoints: a rim lying inside a contact pad joins through that pad's terminal.
     endpoint, joined = {}, set()
     for drill_id, rim_list in rim_layers.items():
         for layer_id in rim_list:
             rim = meshes[layer_id].hole_rims[drill_id]
-            for label, (contact_layer, nodes) in contact_nodes.items():
+            for terminal, (contact_layer, nodes) in terminal_nodes.items():
                 if contact_layer != layer_id:
                     continue
                 inside = np.isin(rim, nodes)
                 if inside.all():
-                    endpoint[(drill_id, layer_id)] = contacts[label].terminal
-                    joined.add(label)
+                    endpoint[(drill_id, layer_id)] = terminal
+                    joined.add(terminal)
                 elif inside.any():
                     raise ValueError(f"{drill_id} on {layer_id}: its edge lies partly inside "
-                                     f"the pad of pin {label!r}; not supported")
-    for label, (layer_id, nodes) in contact_nodes.items():
-        network.add_terminal(contacts[label].terminal, layer_id, nodes, rim=label in joined)
+                                     f"the pads of {terminal}; not supported")
+    for terminal, (layer_id, nodes) in terminal_nodes.items():
+        network.add_terminal(terminal, layer_id, nodes, rim=terminal in joined)
     for drill_id, rim_list in rim_layers.items():
         for layer_id in rim_list:
             if (drill_id, layer_id) not in endpoint:
@@ -214,6 +254,8 @@ def build_net_network(board, clean, mesh, pins=(), *, resistivity=COPPER_RESISTI
                 network.add_terminal(name, layer_id, meshes[layer_id].hole_rims[drill_id], rim=True)
                 endpoint[(drill_id, layer_id)] = name
 
+    for name, a, b in links:
+        network.add_resistor(name, a, b, LINK_OHM)
     barrels = []
     for drill_id, rim_list in rim_layers.items():
         d = drills[drill_id]
@@ -236,4 +278,4 @@ def build_net_network(board, clean, mesh, pins=(), *, resistivity=COPPER_RESISTI
         "component's side.",
     )
     return NetNetwork(net, network, contacts, tuple(barrels), conductance, rho, rho_barrel,
-                      clean.plating_m, assumptions)
+                      clean.plating_m, assumptions, pin_nodes, members, endpoint, tuple(links))

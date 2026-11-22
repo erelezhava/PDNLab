@@ -38,7 +38,7 @@ from .board_network import COPPER_RESISTIVITY_OHM_M
 TOP_KEYS = {"board", "kicad_pcb", "plating_um", "source", "load", "options"}
 GROUP_KEYS = {"name", "power_pins", "gnd_pins"}
 OPTION_KEYS = {"resistivity_ohm_m", "barrel_resistivity_ohm_m", "tolerance_uv",
-               "tolerance_percent"}
+               "tolerance_percent", "max_memory_gb"}
 
 
 @dataclass(frozen=True)
@@ -70,6 +70,7 @@ class Setup:
     tolerance_v: float
     tolerance_rel: float
     kicad_pcb_path: Path | None = None
+    max_memory_bytes: int | None = None     # None: half of the machine's RAM
 
 
 @dataclass(frozen=True)
@@ -179,6 +180,8 @@ def parse_setup(text, path):
                          "[options] barrel_resistivity_ohm_m")
     tol_v = _number(options.get("tolerance_uv", 10), "[options] tolerance_uv") * 1e-6
     tol_rel = _number(options.get("tolerance_percent", 1), "[options] tolerance_percent") / 100
+    max_memory = (int(_number(options["max_memory_gb"], "[options] max_memory_gb") * 1024**3)
+                  if "max_memory_gb" in options else None)
     def relative(key):
         value = data[key]
         if not isinstance(value, str) or not value.strip():
@@ -191,7 +194,7 @@ def parse_setup(text, path):
     if kicad_pcb is not None and kicad_pcb.suffix != ".kicad_pcb":
         raise SetupError(f"'kicad_pcb' must name a .kicad_pcb file, got {kicad_pcb.name!r}")
     return Setup(path, relative("board"), plating, sources, loads, rho, rho_barrel, tol_v,
-                 tol_rel, kicad_pcb)
+                 tol_rel, kicad_pcb, max_memory)
 
 
 def read_setup(path):
@@ -336,6 +339,7 @@ def setup_template(board, board_name, *, kicad_pcb_name=None, min_pins=3, width=
         "# barrel_resistivity_ohm_m = 1.724e-8",
         "# tolerance_uv = 10                # refinement check: 10 uV + 1 %",
         "# tolerance_percent = 1",
+        "# max_memory_gb = 8                # default: half of this computer's RAM",
         "",
         f"# ---- Nets with at least {min_pins} pins, most pins first (copy pin names from here) ----",
     ]

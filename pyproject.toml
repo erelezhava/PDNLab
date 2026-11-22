@@ -11,6 +11,7 @@ license = "Apache-2.0"
 license-files = ["LICENSE"]
 requires-python = ">=3.11"
 dependencies = [
+    "matplotlib>=3.11.2",
     "meshio>=5.3.5",
     "numpy>=1.26",
     "scipy>=1.11",
@@ -22,7 +23,6 @@ pdnlab-dc = "pdnlab_dc.cli:main"
 
 [dependency-groups]
 dev = [
-    "matplotlib>=3.11.2",
     "pytest>=8",
 ]
 
