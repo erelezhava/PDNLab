@@ -2642,3 +2642,117 @@ sources on one net accepted (1).
 Not covered: remote sense (after 0.1), two sources on one net, a graphical form.
 
 Stopped before solving: no refinement loop, results or `run` command.
+
+## 2026-11-22 — Phase 2 small task: project flow (export from KiCad, pin wildcards)
+
+**Result / Recommendation: `pdnlab-dc init BOARD.kicad_pcb` now exports the board
+with KiCad's own `kicad-cli` into a `pdnlab/` folder in the KiCad project and
+writes the setup form there; `check` (and `run`) export again when the
+`.kicad_pcb` is newer than the export. A pin may be written `U1.*`. On Erekle's
+private board the export ran with KiCad 10.0.8, and the wildcards found 4 GND
+balls of the BGA load and 1 GND pin of the connector source that the
+hand-written lists had missed (hidden in the schematic). Erekle's machine: full
+suite 726 passed. Merged as PR #37. Recommendation: solving and output
+(increment 13).**
+
+Decided by Erekle (2026-11-22):
+
+1. One `pdnlab/` folder in the KiCad project holds the export, the setup and,
+   under `results/`, every run's results, so they can be reviewed next to the
+   design.
+2. Automatic export: the setup's optional `kicad_pcb` key names the board; a
+   stale export cannot be simulated by accident. The board is still read only
+   through the IPC-2581 export (rev C, mm); `kicad-cli` is found on `PATH` or
+   named by `PDNLAB_KICAD_CLI`.
+3. Pin wildcards: `U1.*` is every pin of U1 on that list's net, the net taken
+   from the list's named pins (at least one named pin is required). Overlaps are
+   checked after expansion; `check` says how many pins each wildcard added.
+
+Tests: `tests/test_setup.py` gains 8 (42 in all, counting parameter cases):
+wildcard expansion and its errors, the `kicad_pcb` key, export and re-export
+when the board is newer, `init` from a `.kicad_pcb` and `check` re-exporting
+(with a stand-in `kicad-cli`), and `kicad-cli` missing or failing.
+
+Not covered: the real `kicad-cli` in CI (a stand-in is used there; the real
+export was run on Erekle's machine).
+
+## 2026-11-22 — Phase 2 small task: solve and output (`pdnlab-dc run`)
+
+**Result / Recommendation: the first DC drop result on a real board.
+`pdnlab-dc run` meshes and solves each rail's power net and the GND net,
+refines until settled and writes a summary, CSV tables, VTU fields and PNG maps.
+On Erekle's private board (4 copper layers; one rail, a connector source and a
+BGA load at 1 A), run on his laptop: the load sees 3.917 mV less than the
+source (power 2.809 mV, GND 1.108 mV); settled at scale 0.5 (last change 14.14
+µV against 49.17 µV allowed); losses equal drop × current on both nets. Cloud
+workspace: 727 passed, 4 skipped; Erekle's machine: 731 passed. Merged as PR
+#38. Recommendation (decided by Erekle): no release yet; a performance stage and
+multi-rail GND come before the release gate run.**
+
+What `run` does (decided by Erekle, 2026-11-22, with the earlier setup and output
+decisions):
+
+1. Power and GND are separate networks with the same currents; GND is solved
+   with the loads drawing and negated (the rise above the source's GND). Each
+   load sees V(power) − V(GND).
+2. Refinement: scale 1, 0.5, 0.25, 0.125, at most 3 refinements, until every
+   load's voltage changes by at most the tolerance (default 10 µV + 1 % of its
+   drop); otherwise an error naming the load.
+3. A pin group with pins on several layers (a BGA's balls and a through-hole
+   connector) has one terminal per layer, joined by 1 µΩ links: 1 µV per
+   ampere, stated in the summary. A first version refused this case and Erekle's
+   board hit it with a traceback (option B, chosen by Erekle). The island check
+   counts a group's pins as joining their pieces.
+4. Output: `summary.txt`, `loads.csv`, `pins.csv`, `vias.csv`, and per net and
+   layer a VTU and two PNGs (voltage, current density in A/mm², capped at the
+   99.5th percentile). Results go to `results/<setup name>/` next to the setup;
+   earlier results are replaced only with `--force`. Errors print one line, no
+   traceback. Exit codes: 0 settled, 1 not solved, 2 not settled.
+5. Memory protection (Erekle: "very important"): before each round the memory
+   it needs is predicted from the last round's measured peak, scaled by the
+   growth in mesh size and a 1.5× margin; a round over the limit
+   (`max_memory_gb`, default half the RAM) or the free memory is not started,
+   and the last completed round is reported, marked NOT SETTLED (exit 2). A hard
+   address-space ceiling (limit + 2 GB), inherited by Gmsh, turns a wrong
+   estimate into a clean out-of-memory message.
+
+Measured on the private board (Erekle's laptop, 22.6 GB RAM):
+
+| Round | Triangles (power + GND) | Peak memory | Load sees (change) |
+| --- | --- | --- | --- |
+| scale 1 | 0.96 M | 1.7 GB | — |
+| scale 0.5 | 3.64 M | 7.1 GB | 14.14 µV, settled |
+
+- 547 s in all. The largest barrel current is 0.31 A; the averaged hot spots
+  are 20 to 27 A/mm² (peaks at pad corners grow with refinement, as expected).
+- Without the margin, the second round's memory was predicted at about 5.9 GB
+  and measured 7.1 GB: 20 % low for a round 3.8 times larger. Hence the 1.5×
+  margin; predicted and measured memory are now reported per round.
+- Consequence: a further round (scale 0.25, about 4 times the triangles) would
+  need several times 7.1 GB, beyond this laptop's limit (not run). Erekle's
+  assessment: an 8-layer board with several power nets will not fit with the
+  current solver.
+
+Decided by Erekle (2026-11-22) after the first result:
+
+1. No release now: a great product first. The release gate run (increment 14)
+   waits until after the performance stage and multi-rail GND.
+2. A performance stage: every optimisation we have an idea for, each measured on
+   the private board and on an 8-layer benchmark board (listed in the roadmap).
+   Rust or C only for a hotspot that remains after measuring.
+3. Hardware path: this laptop (22.6 GB), then a 32 GB work PC, then an office
+   server.
+
+Open: GND with several rails. The GND net carries every rail's return current at
+once, so solving it per rail is right only for one rail. To be decided before
+the release gate.
+
+Tests: `tests/test_run.py` (13): power and GND strips against the exact answer
+(to 1e-9); a group across two layers as strips in parallel with the links; pin
+shares with a hole inside a pad; the refinement error; a round not started for
+memory, marked and exit 2; the hard ceiling in a child process against a
+control child; the written files; `run` on the public arc board.
+
+Not covered: several rails sharing GND (see above); a round refused for memory
+on a real board (shown only on a test case); runs on a machine other than
+Erekle's laptop.
