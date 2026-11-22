@@ -5,17 +5,19 @@ measured results live in [DECISIONS.md](DECISIONS.md); the full plan, gates and
 estimates in [project-plan.md](project-plan.md). Update this file after each
 increment, in the same commit or pull request.
 
-Last updated: 2026-11-22, after the setup file and output decisions.
+Last updated: 2026-11-22, after the setup file was merged (PR #35).
 
 ## Where we are
 
-Phase 2 (real boards). Increments 1 to 11 are merged: every kind of copper and
+Phase 2 (real boards). Increments 1 to 12 are merged: every kind of copper and
 hole in a KiCad 10 IPC-2581 export is read, checked against KiCad, assembled
 into one `BoardModel`, cleaned into pieces per net and layer with holes cut,
 meshed per net and built into a solvable network with barrels, pin contacts and
-an island check (private test board: a power net passes the island check and a
-pin-to-pin resistance converges within gate 5). The setup file is next: nothing
-yet reads sources and loads from a file or writes results.
+an island check; a TOML setup file says what to simulate, generated as a form by
+`pdnlab-dc init` and checked by `pdnlab-dc check` (private test board: a power
+net passes the island check, a pin-to-pin resistance converges within gate 5,
+and a filled-in setup is accepted). Solving and output are next: nothing yet
+writes a result.
 
 Committed scope is the MVP: a command-line DC drop solver for KiCad 10 boards,
 results viewed in ParaView, release 0.1. Phases 3 to 6 are backlog, re-decided
@@ -48,8 +50,8 @@ after release 0.1.
 | 9 | Copper cleanup per net and layer (`copper_cleanup.py`: pieces with IDs; plated holes cut at finished radius + plating; overlapping nets raise) | Merged, PR #27; public boards and private board (610 pieces) match KiCad's plot piece for piece |
 | 10 | Meshing one net with Gmsh (`board_mesh.py`): default size rules, refinement at holes, SMD pads and thin copper; halving the scale halves every size | Merged, PR #30; first mesh within 1% of converged on every case measured, private power-net plane included |
 | 11 | Contact model (`board_network.py`): sheets, barrels, equipotential pin contacts, island check; mesh follows pad outlines | Merged, PR #32; exact pin, barrel and ring case within 0.019%; private power net passes the island check |
-| 12 | Setup file (TOML): sources and loads by pin groups (power and GND pins), plating, optional resistivity and tolerance; power and GND both simulated | Next: decisions logged 2026-11-22 |
-| 13 | Solve with the refinement check; voltage and current-density maps (VTU and PNG), text/CSV summary (per-load voltage, per-pin and per-via currents, hot spots, losses); CLI | Planned |
+| 12 | Setup file (`setup.py`, TOML): sources and loads by pin groups, nets from the pins; `pdnlab-dc init` writes a form, `pdnlab-dc check` checks it | Merged, PR #35; a filled-in form for the private board accepted |
+| 13 | Solve with the refinement check; voltage and current-density maps (VTU and PNG), text/CSV summary (per-load voltage, per-pin and per-via currents, hot spots, losses); `pdnlab-dc run` | Next |
 | 14 | Release 0.1 gate run on the real test board | Planned |
 
 Increments 8 to 14 are an outline, not yet agreed in detail; each is split and
@@ -69,6 +71,7 @@ decided when it starts.
 ## After release 0.1
 
 - Remote sense: sense nets and their position on a source (Erekle, 2026-11-22).
+- A graphical setup form; two sources on one power net.
 
 ## Open decisions
 
@@ -138,3 +141,7 @@ decided when it starts.
   groups, nets found from the pins; power and GND solved as separate networks
   with the same currents; maps as VTU and PNG plus a text/CSV summary; remote
   sense after release 0.1.
+- Setup file (2026-11-22): several rails in one file, one source per power net;
+  tolerance as two numbers; strict about unknown keys; board path relative to
+  the setup; `pdnlab-dc init` writes a form from the board (nets with 3 or more
+  pins listed), `pdnlab-dc check` checks it.

@@ -2578,3 +2578,67 @@ Output (increment 13):
   and is unbounded in theory at pad and inner copper corners: its peak there
   grows with refinement. Peaks are reported with that note, together with the
   density averaged over a small area, which converges.
+
+## 2026-11-22 — Phase 2 small task: the setup file (read, check, form)
+
+**Result / Recommendation: a simulation can now be described and checked.
+`setup.read_setup` reads a TOML setup strictly, `setup.bind_setup` checks it
+against the board and finds the nets from the pins, and `pdnlab-dc init` writes
+a form to fill in from the board. Erekle filled in the form for his private
+board (one rail: a connector source and a BGA load, 1 A) and `pdnlab-dc check`
+accepted it. Cloud workspace: 34 new tests pass; full suite 706 passed, 4
+skipped on Python 3.11.18, 3.13.18 and 3.14.6; Erekle's machine 710 passed.
+Merged as PR #35. Recommendation: start solving and output (increment 13).**
+
+Decided by Erekle (2026-11-22), in addition to the earlier setup decisions:
+
+1. Several rails in one file: each `[[source]]` defines a rail (its power net),
+   each `[[load]]` belongs to the rail its power pins are on; GND is shared. For
+   release 0.1, one source per power net.
+2. The refinement tolerance is two numbers, `tolerance_uv` and
+   `tolerance_percent`, not a text to parse.
+3. Strict: an unknown key is an error naming it. The board path is relative to
+   the setup file's folder.
+4. A form generated from the board instead of a blank file (Erekle's idea):
+   `pdnlab-dc init BOARD.xml` writes `setup.toml` next to the board with the
+   blanks to fill in and, at the bottom, every net with at least 3 pins (most
+   pins first) with its pins and components, to copy names from. Required
+   numbers are written as 0, so a form not yet filled in is refused with the
+   first blank named. It never replaces a file without `--force`. A graphical
+   form is left for after release 0.1.
+
+Also added: `pdnlab-dc check SETUP.toml` reads the setup, checks it against the
+board and prints what will be simulated (rails, sources, loads, total current).
+The `pdnlab-dc` command is declared in `pyproject.toml`; `python -m
+pdnlab_dc.cli` works without reinstalling.
+
+Checks in `bind_setup`: every pin exists and has a net; each group's pins are on
+one net; all GND pins of the file are on one net; power pins are not on the GND
+net; one source per power net; every load's power net has a source. In
+`read_setup`: board, plating and at least one source and load required; numbers
+finite (volts and plating more than zero, amps zero or more); pins named like
+`U1.12`, none twice in a list, none in two groups, none in both lists of one
+group; names unique.
+
+Found on first use: listing a pin in both `power_pins` and `gnd_pins` of one
+group first gave "used by both 'MCU' and 'MCU'"; it now says the pin is in both
+lists of that group. On the private board, the MCU's GND list held 2 balls
+against 7 power balls, the ones visible in the schematic; the rest are hidden
+pins. Hidden pins still have pads on the board: they belong in the list if they
+are on the GND net, and if they are named VSS they may be on a separate global
+net, a KiCad trap. The form's net lists, taken from the board, show which.
+
+Tests: `tests/test_setup.py` (34): a good setup and its defaults; options; 18
+format errors; zero amps allowed; nets found from the pins on the public arc
+board (+3.3V on R1.1 and R2.1, GND on R1.2 and R2.2); pin, group, GND-net and
+rail errors; an unconnected pin; the form, refused unfilled and accepted once
+filled; `init` (relative board path, no overwrite without `--force`) and
+`check`. Deliberate one-line bugs each made tests fail: board path not relative
+to the setup (2), unknown keys accepted (3), a group on several nets accepted
+(1), GND on several nets accepted (2), zero plating or volts accepted (3), the
+form listing every net (1), `init` overwriting without `--force` (1), two
+sources on one net accepted (1).
+
+Not covered: remote sense (after 0.1), two sources on one net, a graphical form.
+
+Stopped before solving: no refinement loop, results or `run` command.
