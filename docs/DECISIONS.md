@@ -2337,3 +2337,36 @@ net ties; non-plated holes on a real board; per-hole plating; KiCad 11.
 
 Stopped after cleanup: no barrels, contacts, island check, meshing, setup, CLI or
 solve.
+
+## 2026-11-22 — Decisions before meshing (increment 10)
+
+**Result / Recommendation: decided by Erekle (2026-11-22), before any meshing
+code. The user does not choose element sizes: PDNLab meshes with default size
+rules and proves each result with a refinement check, stopping with an error if
+it does not settle.**
+
+Explained with Erekle first: Gmsh makes the triangles; PDNLab gives it the
+outlines and a size at every place, and Gmsh follows the smallest of the size
+rules. A mesh behaves like a resistor network: where current flows evenly,
+large triangles are exact; where it crowds (into a via, through a spoke, round a
+corner), a coarse mesh spreads it over too much copper and the drop comes out
+low (experiment 8: up to 1.9% low through 0.5 mm spokes without refinement).
+
+Decisions:
+
+1. **Refinement check on every run.** Solve with the default sizes; halve every
+   size, keeping the pattern, and solve again; compare the drops at every
+   source and load. Stop when the change is within the tolerance and report the
+   result with the change. The tolerance is a user setting; the default is
+   release gate 5 (10 µV + 1% of the drop). A limit on refinement rounds (about
+   3): if the change has not settled by then, stop with an error naming where
+   the change is largest, instead of running on. The loop needs solves, so it is
+   built in increment 13; increment 10 provides meshing with size inputs and
+   shows that halving the sizes really refines.
+2. **Default size rules from experiment 8:** maximum element size 0.5 mm; at
+   holes and through-hole pads the size starts at the hole outline's side and
+   grows 0.15 mm per mm of distance up to the maximum; hole outlines at the 1 µm
+   rule of the cleanup.
+3. **Refinement also at thin copper:** thermal spokes and narrow necks get small
+   elements too, so that current squeezing through them is resolved. How
+   narrow, and how small, is settled with measurements in increment 10.
