@@ -385,7 +385,7 @@ external program (temporary folder, kept only with `keep_dir`). It returns
 each triangle, into `piece_ids`) and `hole_rims` (for every plated hole cut from
 the net's copper on that layer, the node indices on its edge).
 
-`MeshSizes(max_m=0.5e-3, growth=0.075, per_width=4, scale=1)`. At every place the
+`MeshSizes(max_m=0.5e-3, growth=0.075, per_width=4, pad_divisions=16, scale=1)`. At every place the
 size is the smallest of: the maximum × scale; the outline's own vertex spacing ×
 scale; scale × (edge size + growth × distance) around plated holes (edge size
 the hole outline's side) and around pads without a hole (a quarter of the pad's
@@ -393,6 +393,37 @@ shorter side); a quarter of the local width in thin copper. Halving `scale`
 halves the size at every place. Sizes are not extended from the outline into the
 interior.
 
-The mesh covers each piece exactly (its boundary is the piece's outline). Raises
+Since the contact model (2026-11-22) the mesh also follows every pad outline of the
+net: `LayerMesh.pad_of` gives each triangle's pad (index into `pad_ids`, −1 off
+pads), and each pad is exactly a set of whole triangles. Pad refinement starts at
+the pad's shorter side / `pad_divisions`. Pieces and pads are rounded onto a 10 nm
+grid and noded together at that precision; the mesh covers each piece as rounded
+(at most a grid step of copper along its outline). Raises
 for a net with no copper, wrong argument types and invalid `MeshSizes`; a
 RuntimeError if Gmsh fails or a piece or hole edge is missing from its output.
+
+## Contact model (2026-11-22)
+
+`BoardModel.component_layers` holds (component reference, outer copper layer)
+pairs, read from `Step/Component@layerRef`; when present, every pin's component
+must be listed.
+
+`pdnlab_dc.board_network.build_net_network(board, clean, mesh, pins=(), *,
+resistivity=1.724e-8, barrel_resistivity=None)` returns `NetNetwork`: a Phase 1
+`Network` (not yet prepared), `contacts` (pin label → `PinContact`: PinPad,
+layer, terminal name `pin:<label>`), `barrels` (`BarrelLink`: drill, the two
+layers, resistance), sheet conductances, the resistivities, plating and
+assumptions. `net_pins(board, net)` lists a net's pin labels.
+
+- Sheets: one per layer of the mesh, conductance = copper thickness /
+  resistivity.
+- Barrels: for every plated hole with a rim on two or more layers, a resistor
+  between neighbouring rims; length = distance between layer centres; copper
+  from d/2 to d/2 + plating; `barrel_resistivity` (default the sheet's).
+- Contacts: an equipotential terminal on all nodes of the pad's triangles; an
+  SMD pad on its layer, a through-hole pin on its component's side. A rim lying
+  inside a contact pad joins its barrel through that pad.
+- Raises `IslandError` when the net's pieces, joined by the barrels, form more
+  than one group (nothing simulated); `ValueError` for unknown pins, pins on
+  another net, pins with several pads, a through-hole pin whose side is unknown,
+  a hole edge partly inside a contact pad, and invalid resistivities.

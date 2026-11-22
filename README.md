@@ -262,6 +262,11 @@ with Gmsh (an external program), with default size rules and one scale factor
 that a refinement check halves. On every case measured, the first mesh is
 within 1% of the converged resistance.
 
+`pdnlab_dc.board_network.build_net_network(board, clean, mesh, pins)` turns one
+net into a solvable network: a sheet per layer, via and pin barrels between the
+layers, and an equipotential contact on each chosen pin's pad. If any piece of the
+net is not joined to the rest (an island), it stops and nothing is simulated.
+
 ## Phase 0 experiments
 
 | # | Experiment | Status |

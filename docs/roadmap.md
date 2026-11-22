@@ -5,16 +5,17 @@ measured results live in [DECISIONS.md](DECISIONS.md); the full plan, gates and
 estimates in [project-plan.md](project-plan.md). Update this file after each
 increment, in the same commit or pull request.
 
-Last updated: 2026-11-22, after meshing was merged (PR #30).
+Last updated: 2026-11-22, after the contact model was merged (PR #32).
 
 ## Where we are
 
-Phase 2 (real boards). Increments 1 to 10 are merged: every kind of copper and
+Phase 2 (real boards). Increments 1 to 11 are merged: every kind of copper and
 hole in a KiCad 10 IPC-2581 export is read, checked against KiCad, assembled
-into one `BoardModel`, cleaned into pieces per net and layer with holes cut, and
-meshed per net (private test board: 355/355 pins and 610 pieces match KiCad; the
-power-net plane mesh converges within gate 5). The contact model is next. The solver
-core is accepted on synthetic cases. Nothing yet solves a whole imported board.
+into one `BoardModel`, cleaned into pieces per net and layer with holes cut,
+meshed per net and built into a solvable network with barrels, pin contacts and
+an island check (private test board: a power net passes the island check and a
+pin-to-pin resistance converges within gate 5). The setup file is next: nothing
+yet reads sources and loads from a file or writes results.
 
 Committed scope is the MVP: a command-line DC drop solver for KiCad 10 boards,
 results viewed in ParaView, release 0.1. Phases 3 to 6 are backlog, re-decided
@@ -46,8 +47,8 @@ after release 0.1.
 | 8 | Assemble a full `BoardModel` from the readers (`ipc2581_board.py`, `PinPad` records) | Merged, PR #23; public boards 26/26 and private board 355/355 pins match KiCad's board file |
 | 9 | Copper cleanup per net and layer (`copper_cleanup.py`: pieces with IDs; plated holes cut at finished radius + plating; overlapping nets raise) | Merged, PR #27; public boards and private board (610 pieces) match KiCad's plot piece for piece |
 | 10 | Meshing one net with Gmsh (`board_mesh.py`): default size rules, refinement at holes, SMD pads and thin copper; halving the scale halves every size | Merged, PR #30; first mesh within 1% of converged on every case measured, private power-net plane included |
-| 11 | Via and pin contact model on real boards (rims and barrels, setup plating); islands on simulated nets raise | Next |
-| 12 | Setup file: sources, loads, rails, material and plating | Planned |
+| 11 | Contact model (`board_network.py`): sheets, barrels, equipotential pin contacts, island check; mesh follows pad outlines | Merged, PR #32; exact pin, barrel and ring case within 0.019%; private power net passes the island check |
+| 12 | Setup file: sources, loads, rails, material and plating | Next |
 | 13 | Solve, VTU output for ParaView, CLI | Planned |
 | 14 | Release 0.1 gate run on the real test board | Planned |
 
@@ -124,3 +125,8 @@ decided when it starts.
   from holes and SMD pads, a quarter of the local width in thin copper; sizes
   not spread from the outline (experiment 8's setting made its meshes finer
   than stated).
+- Contact model (2026-11-22): resistivity default 1.724e-8 Ω·m (planes and
+  barrels separately overridable); pads equipotential, the mesh follows their
+  outlines; through-hole pins contacted on their component's side; an island on
+  a simulated net raises and nothing is simulated; `fem.tie_nodes` fix for large
+  tied pads (approved).

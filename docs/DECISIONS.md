@@ -2442,3 +2442,93 @@ other than these two; KiCad 11.
 
 Stopped after meshing: no contacts, barrels, island check, setup, refinement
 loop, CLI or solve.
+
+## 2026-11-22 — Phase 2 small task: contact model (one net as a network)
+
+**Result / Recommendation: one net of a real board is now a solvable network.
+`board_network.build_net_network(board, clean, mesh, pins)` builds sheets,
+barrels and pin contacts and runs the island check. On Erekle's private board
+one power net (90 pieces on 4 layers, 90 barrels) passes the island check, and
+a pin-to-pin resistance from B.Cu to F.Cu, 40.6 mm apart, changes +0.33% at the
+first halving, with the solver's conservation checks passing. A pin, barrel and
+copper ring agree with the exact answer within 0.019%. Cloud workspace: full
+suite 672 passed, 4 skipped on Python 3.11.18, 3.13.18 and 3.14.6; Erekle's
+machine 676 passed. Merged as PR #32. Recommendation: start the setup file
+(increment 12).**
+
+Decided by Erekle (2026-11-22), after explanation:
+
+1. Copper resistivity defaults to 1.724e-8 Ω·m (annealed copper, IACS, 20 °C),
+   separately overridable for planes and barrels; every result states the
+   values used. Plating thickness stays required, with no default.
+2. Pads are equipotential contacts over their whole copper.
+3. An island is any piece of the simulated net not joined to the rest through
+   copper, vias or pin barrels; it raises `IslandError` (layer, location, area)
+   and nothing is simulated. A via with copper on one layer only joins nothing
+   and is part of that layer's piece.
+4. The mesh follows every pad outline (option A), so each pad is exactly a set
+   of whole triangles, which the Phase 1 equipotential contact requires; the
+   alternative of tying whatever nodes lie inside a pad (B) was rejected as
+   mesh-dependent.
+5. A through-hole pin's contact is its pad on the outer layer its component is
+   mounted on; current reaches other layers through the pin's own barrel. Tying
+   all of the pin's pads together was rejected: it assumes a perfectly
+   conducting lead.
+6. SMD pad refinement starts at the pad's shorter side / 16 (`pad_divisions`),
+   separate from the thin-copper rule. With the pad as an exact contact, a pad
+   fed through 0.3 mm spokes was 1.8% low at scale 1 with the earlier quarter of
+   the side; at 1/16 it is 0.7% low for 20% more triangles on that layer.
+   Current crowds at an equipotential pad's edge, so it converges slowly (each
+   halving halves the change); the per-run refinement check covers that.
+7. `fem.tie_nodes` (Phase 1) now recomputes a merged node's diagonal from its
+   off-diagonals when the row sum is within roundoff (64 ε) of the original
+   rows' absolute sums. Tying a large equipotential pad left a cancellation
+   residue that grows with the pad's node count, and the conservation check then
+   rejected a valid network (found when a whole layer was one pad joined only by
+   a barrel; a finely meshed large pad could do the same). A genuinely leaking
+   node is left untouched and still rejected (checked). All Phase 1 analytic
+   tests pass at their original limits.
+
+Also in this increment: each component's side is read from the export
+(`Step/Component@layerRef`, outer copper layers only, no duplicates) into
+`BoardModel.component_layers`; a hole whose edge lies inside a contact pad joins
+its barrel through that pad (the pad is the rim on that layer); a hole edge only
+partly inside a contact pad raises. The mesher rounds pieces and pads onto a
+10 nm grid and nodes them together at that precision: the cleanup's unions
+leave vertices as close as 1.4 nm, and noding pad outlines against a piece left
+points 1e-17 m apart and sliver faces of 6.5e-23 m², which made Gmsh loop
+without end ("Impossible to recover edge"). Gmsh's tolerance is set below the
+grid. The mesh covers each piece as rounded: at most a grid step of copper along
+its outline.
+
+Measured:
+
+| Case | Reference | Result |
+| --- | --- | --- |
+| Through-hole pin (F.Cu contact), barrel to B.Cu (70 µm), ring to a ring-shaped SMD pad | barrel formula + ln(b/a)/(2πσt) = 0.435720 mΩ (35 µm) | 0.435639 mΩ, −0.019%; within 0.5% also at 3× barrel resistivity and 70 µm B.Cu |
+| Thermal (B): SMD pad as exact contact through 0.3 mm spokes | 0.9069 mΩ, extrapolated from scales 1 to 0.125 | −0.73% at scale 1, −0.32% at 0.5 |
+| Thermal board GND, R1.2 to TP2.1 | changes between scales | 0.7112 to 0.7146 mΩ, +0.48% |
+| Private, one power net, pins 40.6 mm apart (B.Cu to F.Cu) | changes between scales | 5.8635 to 5.8829 mΩ, +0.33%; mesh 48 s and 71 s, solve 1.4 s and 5.3 s |
+
+Tests: `tests/test_board_network.py` (6): the exact pin, barrel and ring case
+at two barrel resistivities; the thermal board's sheets, nine barrels against
+the formula, TP1 contacted on its F.Cu pad taking H3's rim; resistivity defaults
+and overrides (everything scales with ρ); an island raising; pin rejections;
+component sides read and validated. `tests/test_board_mesh.py` gained the pad
+test (every pad is whole triangles, accepted as an equipotential contact) and
+references extrapolated for both thermal paths. Deliberate one-line bugs, run
+with `PYTHONDONTWRITEBYTECODE=1` on a committed tree, each made tests fail:
+layer thickness ignored (1, after making B.Cu 70 µm in the exact test; the
+thermal board's layers are all 35 µm), barrel length from layer thickness (2),
+barrel radii from the drilled size (2), barrel solved with the sheet
+resistivity (1, after the exact test also varied the barrel resistivity: the
+reported barrel values alone could not show it), through-hole contact on the
+wrong side (2), island check off (1), rim inside a pad not joined (3), tie
+diagonal not recomputed (3). A first round of the last two runs was invalid (the
+new exact test failed on unchanged code, which is how the tie residue was found)
+and was repeated.
+
+Not run or not covered: pins with several pads, a hole edge partly inside a
+contact pad on a real board, temperature, contact resistance at rims, KiCad 11.
+
+Stopped after the network: no setup file, refinement loop, CLI or result files.
