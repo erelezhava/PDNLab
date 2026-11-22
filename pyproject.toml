@@ -17,6 +17,9 @@ dependencies = [
     "shapely>=2.2.0",
 ]
 
+[project.scripts]
+pdnlab-dc = "pdnlab_dc.cli:main"
+
 [dependency-groups]
 dev = [
     "matplotlib>=3.11.2",

@@ -1,0 +1,227 @@
+"""The setup file (setup.py) and ``pdnlab-dc init`` (cli.py).
+
+Against the public arc board: +3.3V on R1.1 and R2.1, GND on R1.2 and R2.2, so R1 can
+be a source and R2 a load.
+"""
+
+from dataclasses import replace
+from pathlib import Path
+
+import pytest
+
+from pdnlab_dc.cli import main
+from pdnlab_dc.ipc2581_board import read_ipc2581_board
+from pdnlab_dc.setup import (Load, SetupError, Source, bind_setup, parse_setup, read_setup,
+                             setup_template)
+
+FIXTURES = Path(__file__).parent / "fixtures"
+ARC = FIXTURES / "arc_track" / "arc_track.xml"
+
+GOOD = """
+board = "../fixtures/arc_track/arc_track.xml"
+plating_um = 25
+
+[[source]]
+name = "regulator"
+volts = 3.3
+power_pins = ["R1.1"]
+gnd_pins = ["R1.2"]
+
+[[load]]
+name = "MCU"
+amps = 0.5
+power_pins = ["R2.1"]
+gnd_pins = ["R2.2"]
+"""
+
+
+def parse(text, where=None):
+    return parse_setup(text, where or (Path(__file__).parent / "setups" / "run.toml"))
+
+
+def change(old, new):
+    assert GOOD.count(old) == 1
+    return GOOD.replace(old, new)
+
+
+@pytest.fixture(scope="module")
+def arc():
+    return read_ipc2581_board(ARC)
+
+
+def test_a_good_setup_and_its_defaults():
+    setup = parse(GOOD)
+    assert setup.board_path.resolve() == ARC.resolve()      # relative to the setup's folder
+    assert setup.plating_m == pytest.approx(25e-6)
+    (source,), (load,) = setup.sources, setup.loads
+    assert (source.name, source.volts, source.power_pins, source.gnd_pins) == \
+        ("regulator", 3.3, ("R1.1",), ("R1.2",))
+    assert (load.name, load.amps, load.power_pins, load.gnd_pins) == ("MCU", 0.5, ("R2.1",), ("R2.2",))
+    assert setup.resistivity_ohm_m == setup.barrel_resistivity_ohm_m == 1.724e-8
+    assert (setup.tolerance_v, setup.tolerance_rel) == (pytest.approx(10e-6), pytest.approx(0.01))
+
+
+def test_options_are_read():
+    setup = parse(GOOD + "\n[options]\nresistivity_ohm_m = 1.8e-8\ntolerance_uv = 5\n"
+                  "tolerance_percent = 0.5\n")
+    assert setup.resistivity_ohm_m == setup.barrel_resistivity_ohm_m == 1.8e-8
+    assert (setup.tolerance_v, setup.tolerance_rel) == (pytest.approx(5e-6), pytest.approx(0.005))
+    barrel = parse(GOOD + "\n[options]\nbarrel_resistivity_ohm_m = 2e-8\n")
+    assert (barrel.resistivity_ohm_m, barrel.barrel_resistivity_ohm_m) == (1.724e-8, 2e-8)
+
+
+@pytest.mark.parametrize("text, message", [
+    (change("plating_um = 25", "plating_um = 25\namp = 1"), r"unknown key 'amp'"),
+    (change("amps = 0.5", "amp = 0.5"), r"\[\[load\]\] #1: unknown key 'amp'"),
+    (GOOD + "\n[options]\ntolerance = 1\n", r"\[options\]: unknown key 'tolerance'"),
+    (change("plating_um = 25\n", ""), r"'plating_um' is required"),
+    (change("volts = 3.3\n", ""), r"\[\[source\]\] #1: 'volts' is required"),
+    (change("plating_um = 25", "plating_um = 0"), r"plating_um: must be more than zero, got 0"),
+    (change("plating_um = 25", "plating_um = -25"), r"plating_um: must be more than zero"),
+    (change("plating_um = 25", "plating_um = true"), r"plating_um: must be a number"),
+    (change("plating_um = 25", 'plating_um = "25"'), r"plating_um: must be a number"),
+    (change("volts = 3.3", "volts = 0"), r"'regulator' volts: must be more than zero"),
+    (change("amps = 0.5", "amps = -1"), r"'MCU' amps: must be zero or more"),
+    (change('power_pins = ["R2.1"]', "power_pins = []"), r"'MCU' power_pins: must be a non-empty list"),
+    (change('power_pins = ["R2.1"]', 'power_pins = ["R2"]'), r"'R2' is not a pin name"),
+    (change('power_pins = ["R2.1"]', 'power_pins = ["R2.1", "R2.1"]'), r"a pin is listed twice"),
+    (change('power_pins = ["R2.1"]', 'power_pins = ["R1.1"]'),
+     r"pin 'R1.1' is used by both 'regulator' and 'MCU'"),
+    (change('name = "MCU"', 'name = "regulator"'), r"both named 'regulator'"),
+    (change('name = "MCU"', 'name = ""'), r"'name' must be a non-empty text"),
+    ("board = \n", r"not valid TOML"),
+])
+def test_format_errors(text, message):
+    with pytest.raises(SetupError, match=message):
+        parse(text)
+
+
+def test_zero_amps_is_allowed():
+    assert parse(change("amps = 0.5", "amps = 0")).loads[0].amps == 0
+
+
+def test_bind_finds_the_nets_from_the_pins(arc):
+    bound = bind_setup(parse(GOOD), arc)
+    assert bound.gnd_net == "GND"
+    (rail,) = bound.rails
+    assert (rail.power_net, rail.gnd_net, rail.source.name, [l.name for l in rail.loads]) == \
+        ("+3.3V", "GND", "regulator", ["MCU"])
+
+
+@pytest.mark.parametrize("old, new, message", [
+    ('power_pins = ["R2.1"]', 'power_pins = ["R9.1"]', r"'MCU' power_pins: pin 'R9.1' is not on the board"),
+    ('power_pins = ["R1.1"]\ngnd_pins = ["R1.2"]', 'power_pins = ["R1.2"]\ngnd_pins = ["R1.1"]',
+     r"gnd_pins are on different nets"),
+])
+def test_bind_errors(arc, old, new, message):
+    with pytest.raises(SetupError, match=message):
+        bind_setup(parse(change(old, new)), arc)
+
+
+def test_group_and_gnd_net_errors(arc):
+    # The arc board has only 4 pins, so these are built directly, not as text.
+    base = parse(GOOD)
+    mixed = Source("regulator", 3.3, ("R1.1", "R2.2"), ("R1.2",))
+    with pytest.raises(SetupError, match=r"'regulator' power_pins: pins on different nets: "
+                                         r"\+3.3V: R1.1; GND: R2.2"):
+        bind_setup(replace(base, sources=(mixed,), loads=()), arc)
+    off_gnd = Load("MCU", 0.5, ("R2.1",), ("R1.1",))       # its GND pin is on +3.3V
+    with pytest.raises(SetupError, match=r"gnd_pins are on different nets: 'regulator' on "
+                                         r"'GND'; 'MCU' on '\+3.3V'"):
+        bind_setup(replace(base, loads=(off_gnd,)), arc)
+
+
+def test_pin_in_both_lists_of_one_group():
+    with pytest.raises(SetupError, match=r"pin 'R2.1' is in both power_pins and gnd_pins of 'MCU'"):
+        parse(change('gnd_pins = ["R2.2"]', 'gnd_pins = ["R2.1"]'))
+
+
+def test_two_sources_on_one_power_net(arc):
+    base = parse(GOOD)
+    a = Source("a", 3.3, ("R1.1",), ("R1.2",))
+    b = Source("b", 3.3, ("R2.1",), ("R2.2",))
+    with pytest.raises(SetupError, match=r"two sources on the power net '\+3.3V' \('a' and 'b'\); "
+                                         "one source per power net"):
+        bind_setup(replace(base, sources=(a, b), loads=()), arc)
+
+
+def test_power_pins_on_the_gnd_net(arc):
+    base = parse(GOOD)
+    on_gnd = Source("g", 1.0, ("R1.2",), ("R2.2",))
+    with pytest.raises(SetupError, match=r"'g': power_pins are on the GND net 'GND'"):
+        bind_setup(replace(base, sources=(on_gnd,), loads=()), arc)
+
+
+def test_load_on_a_net_without_source(arc):
+    base = parse(GOOD)
+    load = Load("orphan", 1.0, ("R2.1",), ("R2.2",))
+    # Its source is gone; its power net +3.3V has no source.
+    with pytest.raises(SetupError, match=r"'orphan': its power_pins are on '\+3.3V', which has no source"):
+        bind_setup(replace(base, sources=(), loads=(load,)), arc)
+
+
+def test_at_least_one_source_and_load():
+    with pytest.raises(SetupError, match=r"at least one \[\[load\]\] is required"):
+        parse("load = []\n" + GOOD[:GOOD.index("[[load]]")])
+
+
+def test_unconnected_pin_is_an_error():
+    board = read_ipc2581_board(FIXTURES / "pad_shapes" / "pad_shapes.xml")
+    # GND pins both on Net-(Q1-B) (Q1.1, R1.2); the source's power pin TP1.1 has no net.
+    text = (GOOD.replace('power_pins = ["R1.1"]\ngnd_pins = ["R1.2"]',
+                         'power_pins = ["TP1.1"]\ngnd_pins = ["Q1.1"]')
+            .replace('gnd_pins = ["R2.2"]', 'gnd_pins = ["R1.2"]').replace('"R2.1"', '"R1.1"'))
+    with pytest.raises(SetupError, match="pin 'TP1.1' is not connected to any net"):
+        bind_setup(parse(text), board)
+
+
+def test_template_lists_nets_and_reads_back_once_filled(arc, tmp_path):
+    text = setup_template(arc, "arc_board.xml", min_pins=2)
+    assert "# +3.3V (2 pins)\n#   pins: R1.1 R2.1\n#   components: R1 R2" in text
+    assert "# GND (2 pins)" in text
+    # As written, it is a form: reading it says what to fill in first.
+    with pytest.raises(SetupError, match="plating_um: must be more than zero, got 0"):
+        parse(text)
+    filled = (text.replace("plating_um = 0 ", "plating_um = 25 ")
+              .replace('name = ""                         # e.g. "regulator"', 'name = "reg"')
+              .replace("volts = 0 ", "volts = 3.3 ")
+              .replace('power_pins = []                   # e.g. ["U5.2", "U5.3"]', 'power_pins = ["R1.1"]')
+              .replace('gnd_pins = []                     # e.g. ["U5.4"]', 'gnd_pins = ["R1.2"]')
+              .replace('name = ""                         # e.g. "MCU"', 'name = "load"')
+              .replace("amps = 0 ", "amps = 0.5 ")
+              .replace("power_pins = []\ngnd_pins = []", 'power_pins = ["R2.1"]\ngnd_pins = ["R2.2"]'))
+    (tmp_path / "setup.toml").write_text(filled)
+    (tmp_path / "arc_board.xml").write_bytes(ARC.read_bytes())
+    setup = read_setup(tmp_path / "setup.toml")
+    assert setup.board_path == tmp_path / "arc_board.xml"
+    assert bind_setup(setup, arc).rails[0].power_net == "+3.3V"
+    # The default lists nets with 3 or more pins: none on this small board.
+    assert "(2 nets with fewer than 3 pins are not listed)" in setup_template(arc, "a.xml")
+
+
+def test_init_command(tmp_path, capsys):
+    board = tmp_path / "boards" / "arc_board.xml"
+    board.parent.mkdir()
+    board.write_bytes(ARC.read_bytes())
+    out = tmp_path / "runs" / "setup.toml"
+    out.parent.mkdir()
+    assert main(["init", str(board), "-o", str(out), "--min-pins", "2"]) == 0
+    assert 'board = "../boards/arc_board.xml"' in out.read_text()
+    assert main(["init", str(board), "-o", str(out)]) == 1
+    assert "already exists" in capsys.readouterr().err
+    assert main(["init", str(board), "-o", str(out), "--force"]) == 0
+    assert main(["init", str(board)]) == 0
+    assert (board.parent / "setup.toml").exists()
+
+
+def test_check_command(tmp_path, capsys):
+    (tmp_path / "board.xml").write_bytes(ARC.read_bytes())
+    good = GOOD.replace(f'board = "../fixtures/arc_track/{ARC.name}"', 'board = "board.xml"')
+    (tmp_path / "setup.toml").write_text(good)
+    assert main(["check", str(tmp_path / "setup.toml")]) == 0
+    out = capsys.readouterr().out
+    assert "GND net 'GND'" in out and "rail '+3.3V': source 'regulator' 3.3 V on R1.1" in out
+    assert "load 'MCU' 0.5 A on R2.1 (GND R2.2)" in out
+    (tmp_path / "bad.toml").write_text(good.replace('"R2.1"', '"R9.1"'))
+    assert main(["check", str(tmp_path / "bad.toml")]) == 1
+    assert "pin 'R9.1' is not on the board" in capsys.readouterr().err
