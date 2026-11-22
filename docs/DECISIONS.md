@@ -2370,3 +2370,75 @@ Decisions:
 3. **Refinement also at thin copper:** thermal spokes and narrow necks get small
    elements too, so that current squeezing through them is resolved. How
    narrow, and how small, is settled with measurements in increment 10.
+
+## 2026-11-22 — Phase 2 small task: meshing one net (default size rules)
+
+**Result / Recommendation: `board_mesh.mesh_net(clean, board, net_id, sizes)`
+meshes a net's cleaned copper with Gmsh, and the default sizes are within
+release gate 5 (1%) on the first mesh in every case measured. On Erekle's
+private board one power net's biggest plane converges cleanly (changes +0.38%
+then +0.13% at successive halvings; first mesh about 0.6% from the converged
+value). Cloud workspace: 9 new tests pass; full suite 665 passed, 4 skipped on
+Python 3.11.18, 3.13.18 and 3.14.6; Erekle's machine 669 passed. Merged as PR
+#30. Recommendation: start the contact model (increment 11).**
+
+Worked step by step with Erekle; decisions as logged earlier on 2026-11-22
+(only simulated nets are meshed; the user does not choose sizes; a refinement
+check on every run, built in increment 13). Measurements changed the starting
+rules from experiment 8:
+
+- **Sizes are no longer spread from the outline into the interior.** Experiment 8
+  set Gmsh's `Mesh.MeshSizeExtendFromBoundary = 1`, which carries the small sizes
+  of hole and corner outlines across a whole plane: on the thermal board the
+  median triangle in open plane was 0.09 mm instead of 0.5 mm, at five times the
+  count. Experiment 8's "0.5 mm" meshes were therefore finer than stated; its
+  convergence comparisons stand, but not the conclusion that 0.5 mm suffices.
+- **Growth 0.075 per mm instead of 0.15**, and **refinement around SMD pads** (the
+  same rule from the pad edge, starting at a quarter of its shorter side): without
+  them, at scale 1, a via-to-via path was 1.15% low and an SMD pad fed through
+  0.3 mm spokes 2.2% low.
+- **Halving the scale halves the size at every distance** (growth scales too). A
+  first version halved only the edge size and the maximum; around holes the mesh
+  then barely refined and a path did not settle (+0.33%, +0.35%, +0.24%). Found
+  during measurement, fixed before any commit.
+- Thin-copper rule (a quarter of the local width, `per_width` 4): from 2 to 8 the
+  results moved by at most 0.7% at scale 1 and 0.08% at scale 0.5; kept at 4.
+  Narrow copper gets small triangles mostly from its two close edges.
+
+Measured (35 µm copper sheet; only ratios matter):
+
+| Case | Reference | Scale 1 | Scale 0.5 |
+| --- | --- | --- | --- |
+| Copper ring, 0.175 to 5 mm radius | exact ln(b/a)/(2πσt) | −0.13% | +0.05% (settles about +0.1%) |
+| Thermal (A): In1.Cu via to via through four 0.5 mm spokes | converged 0.8571 mΩ (scale 0.125) | −0.63% | −0.20% |
+| Thermal (B): F.Cu SMD pad through three 0.3 mm spokes | converged 0.9122 mΩ | −0.71% | −0.30% |
+| Private, one power net, In2.Cu plane, holes 40 mm apart | changes between scales | — | +0.38%, then +0.13% at 0.25 |
+
+The ring settles about 0.1% above the formula: the 1 µm hole rule draws the hole
+just inside the true circle, so drops lean slightly high, never low. Thermal
+references: consecutive halvings to scale 0.125 changed them by 0.12% and
+0.001%. Cost: thermal board GND, 28k triangles on In1.Cu, about 3 s for four
+layers. Private power net (90 pieces on 4 layers): 113k triangles on In2.Cu at
+scale 1, 42 s; 391k at 0.5, 64 s; 1.47M at 0.25, 133 s.
+
+Tests: `tests/test_board_mesh.py` (9): the ring against the formula at two
+scales; thermal paths (A) and (B) within 1% at scale 1 and closer at 0.5; every
+piece meshed with exactly its area, hole-edge nodes on the hole outline, every
+plated hole of the net marked; sizes follow the rules (0.5 mm × scale far from
+holes, small near them) and halve with the scale; plain copper with no holes or
+pads follows the maximum; `keep_dir`; rejections. Deliberate one-line bugs, run
+with `PYTHONDONTWRITEBYTECODE=1` on a committed tree, each made tests fail:
+growth not scaled (1), sizes spread from the outline (2), no refinement at SMD
+pads (1), growth 0.15 (2), hole edge from the wrong ring (6), maximum not scaled
+(1, after adding the plain-copper test; on the thermal board every layer has
+holes or pads, whose rules already cap the size).
+
+Open: meshing time on dense nets. Refinement zones around 30 holes and many pads
+overlap across the whole plane; correct, but 42 s per mesh. If it matters in
+increment 13, refine only around pads that are sources or loads.
+
+Not run or not covered: very thin necks and copper narrower than 0.3 mm; boards
+other than these two; KiCad 11.
+
+Stopped after meshing: no contacts, barrels, island check, setup, refinement
+loop, CLI or solve.

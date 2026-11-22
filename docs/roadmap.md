@@ -5,15 +5,16 @@ measured results live in [DECISIONS.md](DECISIONS.md); the full plan, gates and
 estimates in [project-plan.md](project-plan.md). Update this file after each
 increment, in the same commit or pull request.
 
-Last updated: 2026-11-22, after the meshing decisions.
+Last updated: 2026-11-22, after meshing was merged (PR #30).
 
 ## Where we are
 
-Phase 2 (real boards). Increments 1 to 9 are merged: every kind of copper and
+Phase 2 (real boards). Increments 1 to 10 are merged: every kind of copper and
 hole in a KiCad 10 IPC-2581 export is read, checked against KiCad, assembled
-into one `BoardModel` and cleaned into pieces per net and layer with holes cut
-(private test board: 355/355 pins and 610 pieces match KiCad). Meshing is next. The solver core is accepted on synthetic cases.
-Nothing yet meshes and solves an imported board outside the experiments.
+into one `BoardModel`, cleaned into pieces per net and layer with holes cut, and
+meshed per net (private test board: 355/355 pins and 610 pieces match KiCad; the
+power-net plane mesh converges within gate 5). The contact model is next. The solver
+core is accepted on synthetic cases. Nothing yet solves a whole imported board.
 
 Committed scope is the MVP: a command-line DC drop solver for KiCad 10 boards,
 results viewed in ParaView, release 0.1. Phases 3 to 6 are backlog, re-decided
@@ -44,8 +45,8 @@ after release 0.1.
 | 7 | Thermal reliefs: public test board, fills meeting pads checked against KiCad's plot | Merged, PR #21; no reader change; public thermal board 12/12 pad and via connections and all fills match KiCad |
 | 8 | Assemble a full `BoardModel` from the readers (`ipc2581_board.py`, `PinPad` records) | Merged, PR #23; public boards 26/26 and private board 355/355 pins match KiCad's board file |
 | 9 | Copper cleanup per net and layer (`copper_cleanup.py`: pieces with IDs; plated holes cut at finished radius + plating; overlapping nets raise) | Merged, PR #27; public boards and private board (610 pieces) match KiCad's plot piece for piece |
-| 10 | Meshing real copper with Gmsh: default size rules (experiment 8), refinement at holes, pins and thin copper; halving sizes refines | In progress: decisions logged 2026-11-22 |
-| 11 | Via and pin contact model on real boards (rims and barrels, setup plating); islands on simulated nets raise | Planned |
+| 10 | Meshing one net with Gmsh (`board_mesh.py`): default size rules, refinement at holes, SMD pads and thin copper; halving the scale halves every size | Merged, PR #30; first mesh within 1% of converged on every case measured, private power-net plane included |
+| 11 | Via and pin contact model on real boards (rims and barrels, setup plating); islands on simulated nets raise | Next |
 | 12 | Setup file: sources, loads, rails, material and plating | Planned |
 | 13 | Solve, VTU output for ParaView, CLI | Planned |
 | 14 | Release 0.1 gate run on the real test board | Planned |
@@ -66,9 +67,9 @@ decided when it starts.
 
 ## Open decisions
 
-- Thin-copper refinement (meshing increment): how narrow counts as thin, and how
-  small its elements are (thermal spokes are as narrow as 0.3 mm on the thermal
-  board); settle with measurements.
+- Meshing time on dense nets (increment 13): a private power net takes 42 s per
+  mesh at scale 1, because refinement zones around 30 holes and many pads cover
+  the plane. If it matters, refine only around pads that are sources or loads.
 - Custom pads: whether KiCad writes their outline with Y already flipped is
   accepted from KiCad's source, not yet shown on an export with an asymmetric
   custom pad. Revisit if a real board uses custom pads (the test board has none).
@@ -119,3 +120,7 @@ decided when it starts.
   from experiment 8 plus refinement at thin copper; every run halves the sizes
   and compares (tolerance a user setting, default gate 5), with a round limit
   and an error if it does not settle. The loop is built in increment 13.
+- Meshing defaults (measured 2026-11-22): maximum 0.5 mm, growth 0.075 per mm
+  from holes and SMD pads, a quarter of the local width in thin copper; sizes
+  not spread from the outline (experiment 8's setting made its meshes finer
+  than stated).

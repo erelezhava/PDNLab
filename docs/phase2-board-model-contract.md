@@ -374,3 +374,25 @@ the contact model.
 Checked against KiCad's SVG plot of the public pad and thermal boards
 (`tests/test_copper_cleanup.py`): the same separate pieces on every layer and
 area within curve-approximation error.
+
+## Meshing (2026-11-22)
+
+`pdnlab_dc.board_mesh.mesh_net(clean, board, net_id, sizes=MeshSizes())` meshes
+one net's copper pieces on every layer the net has copper on, with Gmsh as an
+external program (temporary folder, kept only with `keep_dir`). It returns
+`NetMesh` (net, layers, sizes, Gmsh version, seconds); each `LayerMesh` holds
+`nodes` (N, 2) in metres, linear `triangles` (M, 3), `piece_of` (the piece of
+each triangle, into `piece_ids`) and `hole_rims` (for every plated hole cut from
+the net's copper on that layer, the node indices on its edge).
+
+`MeshSizes(max_m=0.5e-3, growth=0.075, per_width=4, scale=1)`. At every place the
+size is the smallest of: the maximum × scale; the outline's own vertex spacing ×
+scale; scale × (edge size + growth × distance) around plated holes (edge size
+the hole outline's side) and around pads without a hole (a quarter of the pad's
+shorter side); a quarter of the local width in thin copper. Halving `scale`
+halves the size at every place. Sizes are not extended from the outline into the
+interior.
+
+The mesh covers each piece exactly (its boundary is the piece's outline). Raises
+for a net with no copper, wrong argument types and invalid `MeshSizes`; a
+RuntimeError if Gmsh fails or a piece or hole edge is missing from its output.
