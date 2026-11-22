@@ -24,10 +24,20 @@ Builds on ipc2581_metadata (header, units, stackup, provenance) and adds:
   setup's finished-hole size and plating (Phase 2 contract). Slots (ROUT layers),
   backdrills and hole tolerances raise.
 
+* CopperFeature records of kind "text" and "graphic" (``text:<layer>:<k>``,
+  ``graphic:<layer>:<k>``): copper text and footprint graphics (logos) with no net,
+  one feature per Set, read as copper with no net (decided by Erekle, 2026-11-22).
+  KiCad writes text as Polyline strokes with a LineDescRef and footprint graphics as
+  a UserPrimitiveRef into DictionaryUser, whose Contours are filled polygons or, with
+  FillDesc HOLLOW, outlines stroked by their LineDesc. Strokes have round ends and
+  follow the track rules; a Set's strokes and polygons are unioned into its outline.
+  Kept out of the DC solve like all copper with no net; cleanup still raises if they
+  overlap copper on a net. Text or graphics on a net raise.
+
 ``unread`` counts copper a later increment will read; KiCad boards leave it empty
 now. Copper that no planned increment reads raises instead, so copper on
-a net is never left out of a result: teardrops, copper text, footprint graphics and
-board graphic shapes on copper. A footprint-owned zone raises, because the export drops
+a net is never left out of a result: teardrops, copper text and graphics on a net,
+and board graphic shapes on copper. A footprint-owned zone raises, because the export drops
 its net. LayerFeatures of other layers (drills, slots, mask, paste, legend) are listed
 in ``uninspected_layers``. Anything else raises ValueError with layer, net and
 element-path context; nothing is skipped silently.
@@ -48,11 +58,15 @@ KiCad's own unfracture does. No vertex is moved and the enclosed area is unchang
 An outline that is still invalid afterwards raises.
 """
 
+import math
 from collections import Counter
 from dataclasses import dataclass, replace
 from decimal import Decimal
 from pathlib import Path
 
+import xml.etree.ElementTree as ET
+
+import shapely
 from shapely.geometry import Polygon
 from shapely.validation import explain_validity
 
@@ -62,7 +76,7 @@ from pdnlab_dc.ipc2581_metadata import (_DECIMAL, CONVENTIONS, NAMESPACE, _q,
                                         parse_ipc2581_tree)
 from pdnlab_dc.pad_outline import (chamfer_outline, circle_outline, oval_outline, place,
                                   rect_outline, roundrect_outline)
-from pdnlab_dc.track_outline import arc_outline, segment_outline
+from pdnlab_dc.track_outline import arc_outline, arc_points, segment_outline
 
 SCOPE = ("Nets, filled-zone contours, tracks, pads, vias and drill holes. Pad and via "
          "outlines are solid: holes are recorded as DrillFeature and linked by drill_id, not "
@@ -78,6 +92,9 @@ ASSUMPTIONS = (
     "Tracks and copper graphic segments/arcs are outlines with round ends; every vertex lies "
     "on its true circle or edge, within 1 µm chord error (inner arc edges may add up to 1 µm "
     "of copper; the total area is slightly less than exact).",
+    "Copper text and footprint graphics with no net are read as copper with no net: "
+    "strokes outlined like tracks (round ends, 1 µm rule), polygons as written, unioned per "
+    "Set; kept out of the DC solve.",
     "Pads are their dictionary shape turned counter-clockwise (IPC, Y up) by the Pad's Xform "
     "rotation about its Location; round parts use the same 1 µm rule. Per-layer padstacks, "
     "pad offsets and rounded chamfered pads are not exported faithfully by KiCad 10 and are "
@@ -86,9 +103,12 @@ ASSUMPTIONS = (
     "thickness are setup assumptions, applied when holes are cut and barrels modelled.",
 ) + CONVENTIONS
 
-# Set geometryUsage values: copper no planned increment reads, so they raise.
+# Set geometryUsage values. TEXT and GRAPHIC with no net are read (as copper with no
+# net); on a net, and TEARDROP always, they raise.
 _USAGE_KINDS = {"TEXT": "copper text", "GRAPHIC": "footprint graphic on copper",
                 "TEARDROP": "teardrop"}
+_DECORATIVE = {"TEXT": "text", "GRAPHIC": "graphic"}
+_DESC_TAGS = {"LineDesc", "LineDescRef", "FillDesc", "FillDescRef"}
 _SET_ATTRIBUTES = {"net", "padUsage", "geometryUsage", "componentRef"}
 # Tracks: chord error and centre-equidistance tolerance, in metres.
 TRACK_TOL_M = 1e-6
@@ -128,6 +148,7 @@ class Ipc2581Copper:
     component_layers: tuple[tuple[str, str], ...]
     unread: tuple[UnreadCount, ...]
     uninspected_layers: tuple[str, ...]
+    graphics: tuple[CopperFeature, ...] = ()
     scope: str = SCOPE
 
 
@@ -261,8 +282,12 @@ def _attributes(element, required, optional=(), context=""):
 
 class _CopperLayerReader:
     def __init__(self, layer, transform, fills, tracks, pads, shapes, unread, pad_index,
-                 pad_pins):
+                 pad_pins, graphics=None, line_descs=None, user_shapes=None):
         self.layer, self.fills, self.unread, self.pad_pins = layer, fills, unread, pad_pins
+        self.graphics = [] if graphics is None else graphics
+        self.line_descs = line_descs or {}      # id -> (LineDesc element, path)
+        self.user_shapes = user_shapes or {}    # id -> (UserSpecial element, path)
+        self.graphic_index = Counter()
         self.transform = [Decimal(repr(v)) for v in transform]
         self.index = 0
         self.tracks, self.track_index = tracks, 0
@@ -291,8 +316,13 @@ class _CopperLayerReader:
         if usage is not None:
             if usage not in _USAGE_KINDS:
                 raise ValueError(f"{context}: Set geometryUsage {usage!r} is not supported")
-            raise ValueError(f"{context}: {_USAGE_KINDS[usage]} (geometryUsage {usage!r}) is "
-                             "not supported; remove it from copper or wait for support")
+            if usage in _DECORATIVE and net is None and not nested:
+                self._decorative(element, _DECORATIVE[usage], ref)
+                return
+            where = f" on net {net!r}" if net is not None else ""
+            raise ValueError(f"{context}: {_USAGE_KINDS[usage]}{where} (geometryUsage "
+                             f"{usage!r}) is not supported; remove it from copper or wait "
+                             "for support")
         if element.get("componentRef") is not None:
             self._component_set(element, context)
             return
@@ -429,22 +459,27 @@ class _CopperLayerReader:
         return self.local_shapes[shape_id]
 
     def _track(self, element, tag, net, ref):
-        context = _context(self.layer, net, ref)
+        # A full circle (an Arc ending where it starts) is a graphic circle; read only with
+        # no net (decided 2026-11-22: copper graphics with no net are read).
+        polygon = self._track_polygon(element, tag, _context(self.layer, net, ref),
+                                      full_circle=net is None)
+        self.tracks.append(CopperFeature(f"track:{self.layer}:{self.track_index}", net,
+                                         self.layer, "track", polygon, source_ref=ref))
+        self.track_index += 1
+
+    def _track_polygon(self, element, tag, context, decorative=False, full_circle=False):
+        """Outline in metres of a Line or Arc. A track holds one inline LineDesc; copper text
+        may name its LineDesc by a LineDescRef instead."""
         expected = _LINE_ATTRIBUTES if tag == "Line" else _ARC_ATTRIBUTES
         if set(element.attrib) != expected:
             raise ValueError(f"{context}: {tag} attributes must be exactly {sorted(expected)}, "
                              f"found {sorted(element.attrib)}")
         children = list(element)
-        if len(children) != 1 or _tag(children[0]) != "LineDesc":
+        allowed = ("LineDesc", "LineDescRef") if decorative else ("LineDesc",)
+        if len(children) != 1 or _tag(children[0]) not in allowed:
             raise ValueError(f"{context}: {tag} must hold exactly one inline LineDesc, found "
                              f"{[_tag(c) for c in children]}")
-        desc = children[0]
-        if set(desc.attrib) != {"lineWidth", "lineEnd"} or len(desc):
-            raise ValueError(f"{context}: LineDesc must have exactly lineWidth and lineEnd")
-        if desc.get("lineEnd") != "ROUND":
-            raise ValueError(f"{context}: lineEnd {desc.get('lineEnd')!r} is not supported; "
-                             "only ROUND")
-        width = float(_number(desc.get("lineWidth"), context))
+        width = self._line_width(children, context)
         point = lambda x, y: (float(_number(element.get(x), context)),
                               float(_number(element.get(y), context)))
         start, end = point("startX", "startY"), point("endX", "endY")
@@ -455,6 +490,8 @@ class _CopperLayerReader:
                 flag = element.get("clockwise")
                 if flag not in ("true", "false"):
                     raise ValueError(f"clockwise must be 'true' or 'false', found {flag!r}")
+                if start == end and (full_circle or decorative):
+                    return self._circle_ring(start, point("centerX", "centerY"), width, context)
                 outline = arc_outline(start, end, point("centerX", "centerY"), flag == "true",
                                       width, self.track_tol, self.track_tol)
         except ValueError as error:
@@ -463,9 +500,185 @@ class _CopperLayerReader:
         polygon = Polygon([(a*x + b*y + tx, c*x + d*y + ty) for x, y in outline.exterior.coords])
         if not polygon.is_valid:
             raise ValueError(f"{context}: invalid track outline: {explain_validity(polygon)}")
-        self.tracks.append(CopperFeature(f"track:{self.layer}:{self.track_index}", net,
-                                         self.layer, "track", polygon, source_ref=ref))
-        self.track_index += 1
+        return polygon
+
+    def _circle_ring(self, start, centre, width, context):
+        """A full-circle stroke: the ring between radius r - w/2 and r + w/2 (a disc when
+        the stroke covers the centre), vertices on both circles, 1 µm rule."""
+        radius = math.hypot(start[0] - centre[0], start[1] - centre[1])
+        if radius == 0:
+            raise ValueError(f"{context}: full-circle arc of zero radius")
+        a, b, tx, c, d, ty = self.matrix
+        move = lambda ring: [(a*x + b*y + tx, c*x + d*y + ty) for x, y in ring]
+        outer = arc_points(centre, radius + width / 2, 0.0, 2 * math.pi, self.track_tol)[:-1]
+        holes = []
+        if radius > width / 2:
+            holes = [arc_points(centre, radius - width / 2, 0.0, 2 * math.pi,
+                                self.track_tol)[:-1]]
+        polygon = Polygon(move(outer), [move(h) for h in holes])
+        if not polygon.is_valid:
+            raise ValueError(f"{context}: invalid circle outline: {explain_validity(polygon)}")
+        return polygon
+
+    # Copper text and footprint graphics with no net (see the module docstring).
+
+    def _decorative(self, element, kind, ref):
+        context = _context(self.layer, None, ref)
+        parts = []
+        for child, tag, child_ref in _children(element, ref):
+            if tag == "NonstandardAttribute":       # the text itself, as written
+                continue
+            if tag != "Features":
+                raise ValueError(f"{context}: {tag} in copper {kind} is not supported")
+            features = list(_children(child, child_ref))
+            for item, item_tag, item_ref in features:
+                if item_tag == "Location":
+                    _attributes(item, ("x", "y"), (), context)
+                    if any(_number(item.get(k), context) != 0 for k in ("x", "y")):
+                        raise ValueError(f"{context}: copper {kind} under a nonzero Location "
+                                         "is not supported")
+                elif item_tag == "UserSpecial":
+                    parts += self._decorative_special(item, item_ref)
+                elif item_tag == "UserPrimitiveRef":
+                    _attributes(item, ("id",), (), context)
+                    shape_id = item.get("id")
+                    if shape_id not in self.user_shapes:
+                        raise ValueError(f"{context}: {shape_id!r} is not in DictionaryUser")
+                    special, special_ref = self.user_shapes[shape_id]
+                    parts += self._decorative_special(special, special_ref)
+                else:
+                    raise ValueError(f"{context}: {item_tag} in copper {kind} is not supported")
+        if not parts:
+            raise ValueError(f"{context}: copper {kind} with no copper in it")
+        geometry = shapely.union_all(parts)
+        if geometry.is_empty or not geometry.is_valid or geometry.area <= 0:
+            raise ValueError(f"{context}: copper {kind} outline is not a valid area")
+        self.graphics.append(CopperFeature(f"{kind}:{self.layer}:{self.graphic_index[kind]}",
+                                           None, self.layer, kind, geometry, source_ref=ref))
+        self.graphic_index[kind] += 1
+
+    def _decorative_special(self, element, ref):
+        parts = []
+        for child, tag, child_ref in _children(element, ref):
+            context = _context(self.layer, None, child_ref)
+            if tag == "Polyline":
+                parts += self._polyline(child, context)
+            elif tag == "Contour":
+                parts += self._graphic_contour(child, child_ref, context)
+            elif tag in ("Line", "Arc"):
+                parts.append(self._track_polygon(child, tag, context, decorative=True))
+            else:
+                raise ValueError(f"{context}: {tag} in copper text or graphics is not supported")
+        return parts
+
+    def _line_width(self, descs, context):
+        """Stroke width (source units) from one LineDesc or LineDescRef; 0 when none."""
+        lines = [d for d in descs if _tag(d) in ("LineDesc", "LineDescRef")]
+        if len(lines) > 1:
+            raise ValueError(f"{context}: more than one LineDesc")
+        if not lines:
+            return 0.0
+        desc = lines[0]
+        if _tag(desc) == "LineDescRef":
+            _attributes(desc, ("id",), (), context)
+            if desc.get("id") not in self.line_descs:
+                raise ValueError(f"{context}: {desc.get('id')!r} is not in DictionaryLineDesc")
+            desc = self.line_descs[desc.get("id")][0]
+        if set(desc.attrib) != {"lineWidth", "lineEnd"} or len(desc):
+            raise ValueError(f"{context}: LineDesc must have exactly lineWidth and lineEnd")
+        if desc.get("lineEnd") != "ROUND":
+            raise ValueError(f"{context}: lineEnd {desc.get('lineEnd')!r} is not supported; "
+                             "only ROUND")
+        width = float(_number(desc.get("lineWidth"), context))
+        if width < 0:
+            raise ValueError(f"{context}: negative lineWidth")
+        return width
+
+    def _stroke(self, points, width, context):
+        """Round-ended outlines along a chain of source points, in metres."""
+        a, b, tx, c, d, ty = self.matrix
+        pairs = list(zip(points, points[1:]))
+        if not pairs:                   # a single point is a dot
+            pairs = [(points[0], points[0])]
+        out = []
+        for start, end in pairs:
+            try:
+                outline = segment_outline(start, end, width, self.track_tol)
+            except ValueError as error:
+                raise ValueError(f"{context}: {error}") from None
+            out.append(Polygon([(a*x + b*y + tx, c*x + d*y + ty)
+                                for x, y in outline.exterior.coords]))
+        return out
+
+    def _polyline(self, element, context):
+        steps, descs = [], []
+        for i, child in enumerate(element):
+            tag = _tag(child)
+            if tag in _DESC_TAGS:
+                descs.append(child)
+                continue
+            if descs or tag != ("PolyBegin" if i == 0 else "PolyStepSegment"):
+                what = "curved steps are not supported" if tag == "PolyStepCurve" else \
+                    "not supported"
+                raise ValueError(f"{context}: {tag} at position {i+1} of Polyline: {what}; "
+                                 "expected PolyBegin, PolyStepSegment, then a LineDesc")
+            _attributes(child, ("x", "y"), (), context)
+            steps.append((float(_number(child.get("x"), context)),
+                          float(_number(child.get("y"), context))))
+        if any(_tag(d) not in ("LineDesc", "LineDescRef") for d in descs):
+            raise ValueError(f"{context}: a fill description on a Polyline is not supported")
+        width = self._line_width(descs, context)
+        if not steps:
+            raise ValueError(f"{context}: empty Polyline")
+        if width == 0:
+            return []
+        return self._stroke(steps, width, context)
+
+    def _graphic_contour(self, element, ref, context):
+        """A filled polygon, or with FillDesc HOLLOW only its outline stroked."""
+        children = list(element)
+        if element.attrib or not children or _tag(children[0]) != "Polygon":
+            raise ValueError(f"{context}: Contour must start with one Polygon")
+        polygon = children[0]
+        descs = [c for c in polygon if _tag(c) in _DESC_TAGS]
+        fills = [d for d in descs if _tag(d) in ("FillDesc", "FillDescRef")]
+        if any(_tag(d) == "FillDescRef" for d in fills) or len(fills) > 1:
+            raise ValueError(f"{context}: only one inline FillDesc is supported")
+        filled = True
+        if fills:
+            _attributes(fills[0], ("fillProperty",), (), context)
+            prop = fills[0].get("fillProperty")
+            if prop not in ("HOLLOW", "FILL"):
+                raise ValueError(f"{context}: fillProperty {prop!r} is not supported")
+            filled = prop == "FILL"
+        width = self._line_width(descs, context)
+        # The same Contour without its descriptions, for the ring readers. KiCad repeats
+        # the closing point of a graphic polygon; a repeated point (a zero-length edge) is
+        # dropped, which changes no area.
+        bare = ET.Element(element.tag)
+        stripped = ET.SubElement(bare, polygon.tag)
+        last = None
+        for step in polygon:
+            if _tag(step) in _DESC_TAGS:
+                continue
+            here = tuple(_number(step.get(k), context) for k in ("x", "y"))
+            if here != last:
+                stripped.append(step)
+            last = here
+        bare.extend(children[1:])
+        if any(_tag(g) in _DESC_TAGS for cutout in children[1:] for g in cutout):
+            raise ValueError(f"{context}: descriptions on a Cutout are not supported")
+        outline, holes = _contour_rings(bare, ref, context)
+        parts = []
+        if filled:
+            area = Polygon(self.to_metres(outline), [self.to_metres(h) for h in holes])
+            if not area.is_valid:
+                raise ValueError(f"{context}: invalid graphic polygon: {explain_validity(area)}")
+            parts.append(area)
+        if width > 0:
+            for ring in [outline] + holes:
+                parts += self._stroke([(float(x), float(y)) for x, y in ring], width, context)
+        return parts
 
 
 _CORNER_FLAGS = ("upperRight", "upperLeft", "lowerRight", "lowerLeft")
@@ -508,6 +721,23 @@ def _dictionary_outline(shape, ref, context, tol):
         raise ValueError(message if message.startswith(context) else f"{context}: {message}") \
             from None
     raise ValueError(f"{context}: pad shape {tag} is not supported")
+
+
+def _entry_dictionary(root, dictionary_tag, entry_tag, content_tag):
+    """``dictionary_tag`` entry id -> (its one ``content_tag`` element, element path)."""
+    entries = {}
+    for dictionary in root.iter(_q(dictionary_tag)):
+        for entry, tag, ref in _children(dictionary, dictionary_tag):
+            if tag != entry_tag:
+                continue
+            entry_id, content = entry.get("id"), list(entry)
+            if entry_id in entries:
+                raise ValueError(f"{ref}: duplicate dictionary id {entry_id!r}")
+            if len(content) != 1 or _tag(content[0]) != content_tag:
+                raise ValueError(f"{ref}: {entry_tag} {entry_id!r} must hold exactly one "
+                                 f"{content_tag}")
+            entries[entry_id] = (content[0], f"{ref}/{content_tag}[1]")
+    return entries
 
 
 def _shape_dictionary(root):
@@ -612,7 +842,9 @@ def parse_ipc2581_copper(data):
     copper = [layer.id for layer in meta.copper_layers]
     nets, fills, tracks, pads, unread, seen, uninspected = set(), [], [], [], Counter(), set(), []
     shapes = _shape_dictionary(root)
-    pad_index, drill_features, pad_pins = {}, [], []
+    line_descs = _entry_dictionary(root, "DictionaryLineDesc", "EntryLineDesc", "LineDesc")
+    user_shapes = _entry_dictionary(root, "DictionaryUser", "EntryUser", "UserSpecial")
+    pad_index, drill_features, pad_pins, graphics = {}, [], [], []
     for feature, tag, _ in _children(steps[0], "Step"):
         if tag != "LayerFeature":
             continue
@@ -639,7 +871,8 @@ def parse_ipc2581_copper(data):
             uninspected.append(layer)
             continue
         reader = _CopperLayerReader(layer, meta.source.xy_transform, fills, tracks, pads, shapes,
-                                    unread, pad_index, pad_pins)
+                                    unread, pad_index, pad_pins, graphics, line_descs,
+                                    user_shapes)
         for child, child_tag, child_ref in _children(feature, ref):
             if child_tag != "Set":
                 raise ValueError(f"{child_ref}: {child_tag} in a copper LayerFeature is not "
@@ -663,15 +896,16 @@ def parse_ipc2581_copper(data):
     source = replace(meta.source, assumptions=ASSUMPTIONS)
     net_records = tuple(Net(name, name) for name in sorted(nets))
     # Reuse the model's reference checks (unique IDs, known layers and nets); not returned.
-    BoardModel(source, meta.copper_layers, net_records, tuple(fills) + tuple(tracks) + tuple(pads),
-               drills=tuple(drills))
+    BoardModel(source, meta.copper_layers, net_records,
+               tuple(fills) + tuple(tracks) + tuple(pads) + tuple(graphics), drills=tuple(drills))
     order = {layer: i for i, layer in enumerate(copper)}
     counts = tuple(UnreadCount(kind, layer, net, n) for (layer, kind, net), n in
                    sorted(unread.items(), key=lambda item: (order[item[0][0]], item[0][1],
                                                             item[0][2] or "")))
     return Ipc2581Copper(source, meta.copper_layers, net_records, tuple(fills), tuple(tracks),
                          tuple(pads), tuple(pad_pins), tuple(drills),
-                         tuple(sorted(components.items())), counts, tuple(uninspected))
+                         tuple(sorted(components.items())), counts, tuple(uninspected),
+                         tuple(graphics))
 
 
 def read_ipc2581_copper(path):

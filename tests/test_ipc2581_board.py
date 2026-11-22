@@ -109,7 +109,7 @@ def test_counts_on_the_three_public_boards():
 def test_model_holds_every_feature_and_drill_of_the_copper_reader():
     xml = board_files("pad_shapes")[0]
     copper, board = read_ipc2581_copper(xml), read_ipc2581_board(xml)
-    assert board.features == copper.fills + copper.tracks + copper.pads
+    assert board.features == copper.fills + copper.tracks + copper.pads + copper.graphics
     assert board.drills == copper.drills and board.nets == copper.nets
     assert board.layers == copper.copper_layers
     # Every pad copper feature belongs to exactly one pin; vias to none.
