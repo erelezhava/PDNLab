@@ -21,8 +21,15 @@ Builds on ipc2581_metadata (header, units, stackup, provenance) and adds:
   ``drill:<hole name>``. The pad and via copper of the same padstack and net at
   exactly the hole's position, on each layer of the span, gets ``drill_id``. A span
   does not by itself mean contact; holes are cut and barrels modelled later, with the
-  setup's finished-hole size and plating (Phase 2 contract). Slots (ROUT layers),
-  backdrills and hole tolerances raise.
+  setup's finished-hole size and plating (Phase 2 contract). Backdrills and hole
+  tolerances raise.
+* Slots (decided by Erekle, 2026-11-22): each SlotCavity in a layerFunction="ROUT"
+  layer spanning the whole board, an Oval at a Location turned by an optional Xform
+  rotation, as a DrillFeature with ``slot_length_m`` and ``slot_angle_deg`` (its width
+  is ``diameter_m``), ID ``drill:<slot name>``, kind pin (PLATED) or mechanical
+  (NONPLATED). A slot Set names no padstack, so the component pads of the same net at
+  exactly its position, on every copper layer, get its ``drill_id``. Other slot shapes,
+  tolerances and slots not through the whole board raise.
 
 * CopperFeature records of kind "text" and "graphic" (``text:<layer>:<k>``,
   ``graphic:<layer>:<k>``): copper text and footprint graphics (logos) with no net,
@@ -761,8 +768,9 @@ _HOLE_KINDS = {"VIA": ("via", "plated"), "PLATED": ("pin", "plated"),
 _HOLE_ATTRIBUTES = ("name", "diameter", "platingStatus", "plusTol", "minusTol", "x", "y")
 
 
-def _read_drills(feature, layer_element, ref, copper, transform, pads, pad_index):
-    """DrillFeature records of one DRILL LayerFeature, and drill_id set on matching pads.
+def _read_drills(feature, layer_element, ref, copper, transform, pads, pad_index, slots=False):
+    """DrillFeature records of one DRILL (or, with ``slots``, ROUT) LayerFeature, and
+    drill_id set on matching pads.
 
     A hole belongs to the pad or via copper of the same padstack and net at exactly its
     position, on each copper layer of the drill layer's span. Holes are not cut from that
@@ -789,6 +797,16 @@ def _read_drills(feature, layer_element, ref, copper, transform, pads, pad_index
         if set(group.attrib) - {"geometry", "net"}:
             raise ValueError(f"{context}: Set attributes {sorted(group.attrib)} are not supported")
         holes = list(_children(group, group_ref))
+        if slots:
+            if len(holes) != 1 or holes[0][1] != "SlotCavity":
+                raise ValueError(f"{context}: slot Set must hold exactly one SlotCavity, found "
+                                 f"{[t for _, t, _ in holes]}")
+            if span != copper:
+                raise ValueError(f"{context}: a slot not through the whole board is not "
+                                 "supported")
+            drills.append(_slot(holes[0][0], holes[0][2], context.replace(group_ref, holes[0][2]),
+                                net, start, end, span, (a, b, tx, c, d, ty), pads, pad_index))
+            continue
         if len(holes) != 1 or holes[0][1] != "Hole":
             raise ValueError(f"{context}: drill Set must hold exactly one Hole, found "
                              f"{[t for _, t, _ in holes]} (slots and backdrills are not supported)")
@@ -824,6 +842,73 @@ def _read_drills(feature, layer_element, ref, copper, transform, pads, pad_index
             raise ValueError(f"{context}: plated hole with no pad or via copper on any layer of "
                              f"its span {span}")
     return drills
+
+
+_SLOT_ATTRIBUTES = ("name", "platingStatus", "plusTol", "minusTol")
+
+
+def _slot(cavity, ref, context, net, start, end, span, transform, pads, pad_index):
+    """One SlotCavity (an Oval at a Location, turned by an optional Xform rotation) as a
+    DrillFeature with slot_length_m and slot_angle_deg, linked to the component pads of the
+    same net at exactly its position on every layer (a slot Set names no padstack)."""
+    a, b, tx, c, d, ty = transform
+    names = set(cavity.attrib)
+    if names != set(_SLOT_ATTRIBUTES):
+        raise ValueError(f"{context}: SlotCavity attributes must be exactly "
+                         f"{sorted(_SLOT_ATTRIBUTES)}, found {sorted(names)}")
+    status = cavity.get("platingStatus")
+    if status not in ("PLATED", "NONPLATED"):
+        raise ValueError(f"{context}: slot platingStatus {status!r} is not supported")
+    for tolerance in ("plusTol", "minusTol"):
+        if _number(cavity.get(tolerance), context) != 0:
+            raise ValueError(f"{context}: nonzero {tolerance} is not supported")
+    parts = {}
+    for child, tag, _ in _children(cavity, ref):
+        if tag not in ("Location", "Xform", "Oval") or tag in parts:
+            raise ValueError(f"{context}: SlotCavity must hold one Location, one Oval and at "
+                             f"most one Xform; found {tag}")
+        parts[tag] = child
+    if "Location" not in parts or "Oval" not in parts:
+        raise ValueError(f"{context}: SlotCavity needs a Location and an Oval (other slot "
+                         "shapes are not supported)")
+    _attributes(parts["Location"], ("x", "y"), (), context)
+    _attributes(parts["Oval"], ("width", "height"), (), context)
+    rotation = Decimal(0)
+    if "Xform" in parts:
+        _attributes(parts["Xform"], (), ("rotation",), context)
+        rotation = _number(parts["Xform"].get("rotation", "0"), context)
+    x, y = (_number(parts["Location"].get(k), context) for k in ("x", "y"))
+    width, height = (_number(parts["Oval"].get(k), context) for k in ("width", "height"))
+    if width <= 0 or height <= 0:
+        raise ValueError(f"{context}: slot size must be positive")
+    # Long axis in IPC (Y up, counter-clockwise rotation), then in the stored frame, where
+    # Y is reversed: the angle changes sign. A stadium repeats every 180 degrees.
+    ipc_angle = float(rotation) + (0.0 if width >= height else 90.0)
+    angle = (-ipc_angle) % 180.0
+    length, diameter = max(width, height), min(width, height)
+    kind, plating = _HOLE_KINDS[status]
+    drill_id = f"drill:{cavity.get('name')}"
+    drill = DrillFeature(drill_id, (float(a*x + b*y + tx), float(c*x + d*y + ty)),
+                         float(diameter * abs(a)), plating, start, end, kind,
+                         slot_length_m=float(length * abs(a)) if length > diameter else None,
+                         slot_angle_deg=angle if length > diameter else 0.0)
+    linked = 0
+    for layer in span:
+        matches = [i for key, found in pad_index.items()
+                   if key[0] == layer and key[2] == net and key[3:] == (x, y) for i in found]
+        if len(matches) > 1:
+            raise ValueError(f"{context}: {len(matches)} pads on {layer!r} share this slot")
+        for i in matches:
+            pad = pads[i]
+            if pad.drill_id is not None:
+                raise ValueError(f"{context}: pad {pad.id} already has drill {pad.drill_id}")
+            if pad.kind == "via":
+                raise ValueError(f"{context}: slot at via {pad.id}")
+            pads[i] = replace(pad, drill_id=drill_id)
+            linked += 1
+    if plating == "plated" and not linked:
+        raise ValueError(f"{context}: plated slot with no pad copper on any layer")
+    return drill
 
 
 def parse_ipc2581_copper(data):
@@ -863,10 +948,11 @@ def parse_ipc2581_copper(data):
         nets.discard(None)
         function = layer_elements[layer].get("layerFunction")
         if function == "DRILL":
-            drill_features.append((feature, ref))   # read once all pads are known
+            drill_features.append((feature, ref, False))   # read once all pads are known
             continue
         if function == "ROUT" and len(feature):
-            raise ValueError(f"{ref}: routed slots are not supported")
+            drill_features.append((feature, ref, True))   # slots, read with the drills
+            continue
         if layer not in copper:
             uninspected.append(layer)
             continue
@@ -879,9 +965,9 @@ def parse_ipc2581_copper(data):
                                  "supported")
             reader.set(child, child_ref)
     drills = []
-    for feature, ref in drill_features:
+    for feature, ref, slots in drill_features:
         drills += _read_drills(feature, layer_elements[feature.get("layerRef")], ref, copper,
-                               meta.source.xy_transform, pads, pad_index)
+                               meta.source.xy_transform, pads, pad_index, slots=slots)
     components = {}
     for component in steps[0].findall(_q("Component")):
         ref_des, side = component.get("refDes"), component.get("layerRef")

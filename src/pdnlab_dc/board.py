@@ -181,18 +181,40 @@ class DrillFeature:
     start_layer_id: str
     end_layer_id: str
     kind: str
+    # A slot (an oblong hole, a stadium): its overall length along its long axis, and that
+    # axis' angle in degrees from +x towards +y in the stored frame, 0 <= angle < 180.
+    # diameter_m is then the slot's width. None for a round hole.
+    slot_length_m: float | None = None
+    slot_angle_deg: float = 0.0
 
     def __post_init__(self):
         for field in ("id", "start_layer_id", "end_layer_id"):
             _text(getattr(self, field), f"drill {field}")
         _point(self, "position_m")
         _number(self.diameter_m, "diameter_m", positive=True)
+        if self.slot_length_m is not None:
+            _number(self.slot_length_m, "slot_length_m", positive=True)
+            if self.slot_length_m <= self.diameter_m:
+                raise ValueError("a slot must be longer than it is wide")
+        _number(self.slot_angle_deg, "slot_angle_deg")
+        if not 0 <= self.slot_angle_deg < 180:
+            raise ValueError("slot_angle_deg must be in [0, 180)")
         if self.plating not in ("plated", "nonplated", "unknown"):
             raise ValueError("plating must be plated, nonplated or unknown")
         if self.kind not in ("via", "pin", "mechanical"):
             raise ValueError("drill kind must be via, pin or mechanical")
         if self.kind == "via" and self.plating == "nonplated":
             raise ValueError("a via cannot be explicitly nonplated")
+
+    @property
+    def straight_m(self):
+        """Length of each straight side of a slot's wall (slot length - width); 0 if round."""
+        return 0.0 if self.slot_length_m is None else self.slot_length_m - self.diameter_m
+
+    @property
+    def area_m2(self):
+        """Area of the hole as given (width diameter_m), round or slot."""
+        return math.pi * (self.diameter_m / 2) ** 2 + self.straight_m * self.diameter_m
 
 
 @dataclass(frozen=True)

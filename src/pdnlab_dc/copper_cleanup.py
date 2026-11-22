@@ -40,12 +40,14 @@ from shapely.validation import explain_validity
 
 from .board import BoardModel
 from .pad_outline import circle_outline
+from .track_outline import segment_outline
 
 HOLE_TOL_M = 1e-6          # chord error of hole outlines, as for tracks and pads
 AREA_LIMIT_M2 = 1e-12      # 1 µm²: overlaps, breakouts and pieces below this are not counted
 
 SCOPE = ("Copper merged per net and layer into separate pieces, holes cut (plated at "
-         "finished radius + plating, non-plated at their radius). No barrels, contacts "
+         "finished radius + plating, non-plated at their radius; a slot as a stadium of "
+         "that half-width along its axis). No barrels, contacts "
          "or island check: pieces of one net are not yet joined across layers.")
 
 
@@ -199,6 +201,17 @@ def _check_overlaps(layer_id, features):
                                  + tie)
 
 
+def hole_outline(drill, radius):
+    """The hole cut for ``drill`` with half-width ``radius``: a circle, or for a slot a
+    stadium (round ends) along its long axis; 1 µm rule, vertices on the true circles."""
+    if drill.slot_length_m is None:
+        return translate(circle_outline(2 * radius, HOLE_TOL_M), *drill.position_m)
+    half = drill.straight_m / 2
+    angle = math.radians(drill.slot_angle_deg)
+    (x, y), dx, dy = drill.position_m, half * math.cos(angle), half * math.sin(angle)
+    return segment_outline((x - dx, y - dy), (x + dx, y + dy), 2 * radius, HOLE_TOL_M)
+
+
 def _holes(board, layer_id, order, plating_m, drill_nets, merged):
     """(drill id, hole polygon, radius) for every hole through this layer, after checks."""
     holes = []
@@ -213,7 +226,7 @@ def _holes(board, layer_id, order, plating_m, drill_nets, merged):
             raise ValueError(f"{drill.id}: plating {drill.plating!r}; plated or nonplated "
                              "is needed to choose the cut radius")
         radius = drill.diameter_m / 2 + (plating_m if plated else 0.0)
-        hole = translate(circle_outline(2 * radius, HOLE_TOL_M), *drill.position_m)
+        hole = hole_outline(drill, radius)
         if plated:
             own = drill_nets.get(drill.id, {None})
             (net,) = own
