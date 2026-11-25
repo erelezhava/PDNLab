@@ -45,16 +45,29 @@ def current_bytes():
         return None
 
 
-def peak_bytes():
-    """Peak resident memory of this process plus its largest finished child (Gmsh)."""
+def _max_rss(who):
     try:
         import resource
     except ImportError:
         return None
     unit = 1 if sys.platform == "darwin" else 1024          # ru_maxrss: bytes on macOS, KiB on Linux
-    own = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss * unit
-    children = resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss * unit
-    return own + children
+    return resource.getrusage(getattr(resource, who)).ru_maxrss * unit
+
+
+def own_peak_bytes():
+    """Peak resident memory of this process so far."""
+    return _max_rss("RUSAGE_SELF")
+
+
+def child_peak_bytes():
+    """Peak resident memory of the largest finished child process (Gmsh) so far."""
+    return _max_rss("RUSAGE_CHILDREN")
+
+
+def peak_bytes():
+    """Peak resident memory of this process plus its largest finished child (Gmsh)."""
+    own, children = own_peak_bytes(), child_peak_bytes()
+    return None if own is None else own + (children or 0)
 
 
 def default_limit_bytes():

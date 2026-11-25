@@ -106,23 +106,29 @@ def _run(args):
     from .results import write_results
     from .memory import apply_ceiling, default_limit_bytes
     from .run import simulate
+    from .timing import Stopwatch
     try:
         setup = read_setup(args.setup)
         folder = setup.path.parent / "results" / setup.path.stem
         if folder.exists() and not args.force:
             print(f"{folder} already exists; use --force to replace it", file=sys.stderr)
             return 1
-        if refresh_export(setup):
-            print(f"re-exported {setup.board_path} (the .kicad_pcb was newer)")
-        board = read_ipc2581_board(setup.board_path)
-        bound = bind_setup(setup, board)
         limit = setup.max_memory_bytes or default_limit_bytes()
         notes = []
         if limit:
             notes.append(apply_ceiling(limit))
             print(f"memory limit {limit / 1024**3:.1f} GB; {notes[-1]}")
-        run = simulate(bound, board, clean_copper(board, setup.plating_m), log=print,
-                       memory_limit_bytes=limit, notes=notes)
+        watch = Stopwatch()
+        if refresh_export(setup):
+            print(f"re-exported {setup.board_path} (the .kicad_pcb was newer)")
+            watch.lap("export")
+        board = read_ipc2581_board(setup.board_path)
+        watch.lap("read board")
+        bound = bind_setup(setup, board)
+        clean = clean_copper(board, setup.plating_m)
+        watch.lap("cleanup")
+        run = simulate(bound, board, clean, log=print, memory_limit_bytes=limit, notes=notes,
+                       stages=watch.stages)
     except MemoryError:
         print("not solved: out of memory under the hard ceiling; lower max_memory_gb's "
               "rounds or free memory (the machine itself was protected)", file=sys.stderr)
@@ -133,9 +139,11 @@ def _run(args):
         return 1
     if folder.exists():
         shutil.rmtree(folder)
+    writing = Stopwatch()
     write_results(run, folder, f"{setup.path.name} on {setup.board_path.name}")
+    written = writing.lap("write results")
     print((folder / "summary.txt").read_text(encoding="utf-8"))
-    print(f"results in {folder}")
+    print(f"results in {folder} (written in {written.seconds:.1f} s)")
     if not all(rail.settled for rail in run.rails):
         print("NOT SETTLED: see the summary; the results are from the last round that fit",
               file=sys.stderr)

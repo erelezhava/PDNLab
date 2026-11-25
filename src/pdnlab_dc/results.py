@@ -111,6 +111,7 @@ def _summary(run, path, title):
             if len(solve.vias) > 10:
                 lines.append(f"    ... {len(solve.vias) - 10} more holes in vias.csv")
         lines.append("")
+    lines += _timing_lines(run)
     lines += [
         "Notes",
         f"  Plating {run.plating_m * 1e6:g} µm; resistivity {run.resistivity_ohm_m:.4g} Ω·m "
@@ -130,6 +131,46 @@ def _summary(run, path, title):
     ]
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     return path
+
+
+def _stage_rows(run):
+    """(rail, net, role, scale, triangles, stage, factorisation s) for every timed stage, in
+    order: the stages before the rails, then each rail's rounds, power then GND. A row
+    with stage None gives the LU factorisation inside the "prepare" before it."""
+    for stage in run.stages:
+        yield "", "", "", None, None, stage, None
+    for rail in run.rails:
+        for r in rail.rounds:
+            for stage in r.stages:
+                yield rail.power_net, r.net, r.role, r.scale, r.triangles, stage, None
+            if r.factorization_s:
+                yield rail.power_net, r.net, r.role, r.scale, r.triangles, None, r.factorization_s
+
+
+def _gb(value):
+    return "-" if value is None else f"{value / 1024**3:.2f}"
+
+
+def _timing_lines(run):
+    rows = list(_stage_rows(run))
+    if not rows:
+        return []
+    lines = ["Time and memory by stage",
+             "  wall and CPU time in s; memory in GB: held after the stage, this process's "
+             "peak so far,",
+             "  the largest Gmsh run so far. CPU well below wall: the stage waited (disk, or "
+             "other programs).",
+             f"    {'stage':42} {'wall':>8} {'CPU':>8} {'held':>6} {'peak':>6} {'Gmsh':>6}"]
+    for rail, net, role, scale, triangles, stage, factorization in rows:
+        if stage is None:
+            lines.append(f"    {'  of which LU factorisation':42} {factorization:8.1f}")
+            continue
+        what = net if role == "power" else f"{net} ({rail})"
+        name = stage.name if not net else f"{what} scale {scale:g}: {stage.name}"
+        lines.append(f"    {name:42} {stage.seconds:8.1f} {stage.cpu_seconds:8.1f} "
+                     f"{_gb(stage.rss_bytes):>6} {_gb(stage.peak_bytes):>6} "
+                     f"{_gb(stage.child_peak_bytes):>6}")
+    return lines + [""]
 
 
 def _tables(run, folder):
@@ -161,6 +202,18 @@ def _tables(run, folder):
                 rows.append((rail.power_net, v.net, v.drill_id, v.kind, f"{v.position_m[0] * 1e3:.4f}",
                              f"{v.position_m[1] * 1e3:.4f}", f"{v.current_a:.9f}"))
     paths.append(_csv(folder / "vias.csv", rows))
+    rows = [("rail", "net", "role", "scale", "triangles", "stage", "wall_s", "cpu_s",
+             "held_bytes", "peak_bytes", "gmsh_peak_bytes")]
+    for rail, net, role, scale, triangles, stage, factorization in _stage_rows(run):
+        head = (rail, net, role, "" if scale is None else f"{scale:g}",
+                "" if triangles is None else triangles)
+        if stage is None:
+            rows.append(head + ("factorisation (in prepare)", f"{factorization:.3f}", "", "", "", ""))
+        else:
+            rows.append(head + (stage.name, f"{stage.seconds:.3f}", f"{stage.cpu_seconds:.3f}",
+                                *("" if v is None else v for v in
+                                  (stage.rss_bytes, stage.peak_bytes, stage.child_peak_bytes))))
+    paths.append(_csv(folder / "timing.csv", rows))
     return paths
 
 

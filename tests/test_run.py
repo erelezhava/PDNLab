@@ -148,7 +148,7 @@ def test_results_are_written(strips, tmp_path):
     _, _, run = strips
     written = write_results(run, tmp_path / "out", "strips test")
     names = sorted(p.name for p in written)
-    assert names == sorted(["summary.txt", "loads.csv", "pins.csv", "vias.csv",
+    assert names == sorted(["summary.txt", "loads.csv", "pins.csv", "vias.csv", "timing.csv",
                             "+3V3_F.Cu.vtu", "+3V3_F.Cu_voltage.png", "+3V3_F.Cu_current.png",
                             "GND_F.Cu.vtu", "GND_F.Cu_voltage.png", "GND_F.Cu_current.png"])
     summary = (tmp_path / "out" / "summary.txt").read_text()
@@ -188,6 +188,63 @@ def test_run_command_on_the_public_arc_board(tmp_path, capsys, no_ceiling):
     assert main(["run", str(setup)]) == 1
     assert "already exists; use --force" in capsys.readouterr().err
     assert main(["run", str(setup), "--force"]) == 0
+    out = capsys.readouterr().out
+    assert "written in" in out
+    timing = (folder / "timing.csv").read_text().splitlines()
+    assert [r.split(",")[5] for r in timing[1:4]] == ["read board", "cleanup", "mesh"]
+
+
+STAGES = ["mesh", "network", "prepare", "solve", "fields"]
+
+
+def test_every_round_of_every_net_is_timed_stage_by_stage(strips, tmp_path):
+    import csv
+    from pdnlab_dc.results import write_results
+    _, _, run = strips
+    (rail,) = run.rails
+    # Every round, both nets, each with the five stages in order (fields are not kept for
+    # earlier rounds, only their timing).
+    assert [(r.scale, r.role) for r in rail.rounds] == [
+        (s, role) for s, _ in rail.history for role in ("power", "gnd")]
+    for r in rail.rounds:
+        assert [st.name for st in r.stages] == STAGES
+        assert all(st.seconds >= 0 and st.cpu_seconds >= 0 for st in r.stages)
+        assert 0 < r.factorization_s <= r.stages[2].seconds        # inside "prepare"
+        assert all(st.peak_bytes >= st.rss_bytes > 0 for st in r.stages), r.stages
+        assert r.stages[0].child_peak_bytes > 0                     # Gmsh ran in "mesh"
+        # Gmsh's processor time counts: meshing is mostly Gmsh, a child process.
+        assert r.stages[0].cpu_seconds > 0.3 * r.stages[0].seconds
+        assert r.triangles == {"power": rail.power, "gnd": rail.gnd}[r.role].triangles \
+            or r.scale != rail.scale
+    last = [r for r in rail.rounds if r.scale == rail.scale]
+    assert sum(st.seconds for st in last[0].stages) <= rail.power.seconds
+    written = write_results(run, tmp_path / "out", "timing test")
+    summary = (tmp_path / "out" / "summary.txt").read_text()
+    assert "Time and memory by stage" in summary
+    assert "+3V3 scale 1: mesh" in summary and "GND (+3V3) scale 1: prepare" in summary
+    assert "of which LU factorisation" in summary
+    rows = list(csv.DictReader((tmp_path / "out" / "timing.csv").open()))
+    assert len(rows) == len(rail.rounds) * (len(STAGES) + 1)
+    assert {r["stage"] for r in rows} == set(STAGES) | {"factorisation (in prepare)"}
+    first = rows[0]
+    assert (first["rail"], first["net"], first["role"], first["scale"], first["stage"]) == \
+        ("+3V3", "+3V3", "power", "1", "mesh")
+    assert int(first["gmsh_peak_bytes"]) > 0 and float(first["wall_s"]) > 0
+
+
+def test_a_stage_that_waits_shows_wall_time_without_cpu_time():
+    import time
+    from pdnlab_dc.timing import Stopwatch
+    watch = Stopwatch()
+    time.sleep(0.3)
+    waited = watch.lap("wait")
+    total = 0
+    for i in range(3_000_000):
+        total += i
+    worked = watch.lap("work")
+    assert waited.seconds >= 0.3 and waited.cpu_seconds < 0.1
+    assert worked.cpu_seconds > 0.5 * worked.seconds > 0
+    assert [s.name for s in watch.stages] == ["wait", "work"]
 
 
 def test_a_group_across_two_layers_acts_as_one_contact():
