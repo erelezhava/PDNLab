@@ -22,6 +22,10 @@ def _sparse_bytes(matrix):
 
 @dataclass(frozen=True)
 class PreparationStats:
+    """factor_nnz is the entries SuperLU itself stores (its supernodal L and U), read
+    without copying the factor. sparse_storage_bytes is the matrix and coupling as
+    stored, plus the factor estimated at 12 bytes per entry (8 for the value, 4 for its
+    row) and one 4-byte pointer per column for each of L and U."""
     preparation_s: float
     factorization_s: float
     nodes: int
@@ -73,14 +77,17 @@ class PreparedSystem:
         except RuntimeError as exc:
             raise ValueError("conductance matrix is singular") from exc
         factorization_s = perf_counter() - factor_started
-        factors = (self._lu.L, self._lu.U) if self._lu is not None else ()
+        # Not lu.L and lu.U: SciPy builds each as a new copy of the factor, which doubled
+        # the factor's memory just to count it (measured 2026-11-25).
+        factor_nnz = self._lu.nnz if self._lu is not None else 0
+        factor_bytes = 12 * factor_nnz + 8 * (len(self._free) + 1) if factor_nnz else 0
         self.stats = PreparationStats(
             preparation_s=perf_counter() - started,
             factorization_s=factorization_s, nodes=n, free_nodes=len(self._free),
             matrix_nnz=self._matrix.nnz,
-            factor_nnz=sum(x.nnz for x in factors),
-            sparse_storage_bytes=sum(_sparse_bytes(x) for x in
-                                     (self._matrix, self._coupling, *factors)),
+            factor_nnz=factor_nnz,
+            sparse_storage_bytes=sum(_sparse_bytes(x) for x in (self._matrix, self._coupling))
+            + factor_bytes,
         )
         self.last_solve = None
 
