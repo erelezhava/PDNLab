@@ -31,6 +31,7 @@ from .board_mesh import MeshSizes, mesh_net
 from .board_network import build_net_network
 from .fem import assemble_sheet
 from .memory import available_bytes, current_bytes, peak_bytes
+from .timing import Stopwatch
 
 SCALES = (1.0, 0.5, 0.25, 0.125)
 AVERAGE_RADIUS_M = 0.25e-3
@@ -105,6 +106,19 @@ class NetSolve:
     triangles: int
     seconds: float
     group_voltage_v: dict           # group name -> its voltage (GND: rise above the source)
+    stages: tuple = ()              # timing.Stage laps: mesh, network, prepare, solve, fields
+    factorization_s: float = 0.0    # of which the LU factorisation, inside "prepare"
+
+
+@dataclass(frozen=True)
+class RoundTiming:
+    """Time and memory of one net in one refinement round (kept for every round)."""
+    scale: float
+    net: str
+    role: str
+    triangles: int
+    factorization_s: float
+    stages: tuple                   # timing.Stage laps
 
 
 @dataclass(frozen=True)
@@ -123,6 +137,7 @@ class RailResult:
     settled: bool = True
     unsettled_reason: str = ""      # why the next refinement was not run
     memory: tuple = ()              # ((scale, predicted bytes or None, peak bytes), ...)
+    rounds: tuple = ()              # RoundTiming per net and round (not the fields: memory)
 
 
 @dataclass(frozen=True)
@@ -137,6 +152,7 @@ class RunResult:
     notes: tuple[str, ...] = field(default=())
     memory_limit_bytes: int | None = None
     peak_memory_bytes: int | None = None
+    stages: tuple = ()              # timing.Stage laps before the rails (read board, cleanup)
 
 
 def _gradient(nodes, triangles, voltage):
@@ -170,17 +186,21 @@ def _hot_spot(f):
 
 def _solve_net(board, clean, net, role, source, loads, setup, scale):
     """Mesh and solve one net; GND voltages returned as the rise above the source."""
-    started = perf_counter()
+    started, watch = perf_counter(), Stopwatch()
     mesh = mesh_net(clean, board, net, MeshSizes(scale=scale))
+    watch.lap("mesh")
     field_of = "power_pins" if role == "power" else "gnd_pins"
     groups = {g.name: getattr(g, field_of) for g in (source, *loads)}
     network = build_net_network(board, clean, mesh, groups=groups,
                                 resistivity=setup.resistivity_ohm_m,
                                 barrel_resistivity=setup.barrel_resistivity_ohm_m)
+    watch.lap("network")
     src = f"group:{source.name}"
     prepared = network.network.prepare([src])
+    watch.lap("prepare")
     fixed = source.volts if role == "power" else 0.0
     result = prepared.solve({src: fixed}, {f"group:{g.name}": g.amps for g in loads})
+    watch.lap("solve")
     if not result.passed:
         raise RuntimeError(f"net {net!r}: the solver's conservation checks failed: {result.checks}")
     sign = 1.0 if role == "power" else -1.0        # GND: loads drew; negate to get the rise
@@ -224,10 +244,12 @@ def _solve_net(board, clean, net, role, source, loads, setup, scale):
     vias = tuple(sorted((ViaResult(net, d, drills[d].kind, drills[d].position_m, i)
                          for d, i in by_drill.items()), key=lambda v: -v.current_a))
     group_v = {name: sign * float(result.terminal_voltages_v[f"group:{name}"][0]) for name in groups}
-    return NetSolve(net, role, tuple(fields), tuple(pins), vias,
-                    tuple(_hot_spot(f) for f in fields),
+    hot_spots = tuple(_hot_spot(f) for f in fields)
+    watch.lap("fields")
+    return NetSolve(net, role, tuple(fields), tuple(pins), vias, hot_spots,
                     float(sum(result.branch_losses_w.values())), dict(result.checks),
-                    sum(len(L.triangles) for L in mesh.layers), perf_counter() - started, group_v)
+                    sum(len(L.triangles) for L in mesh.layers), perf_counter() - started, group_v,
+                    tuple(watch.stages), float(prepared.stats.solver.factorization_s))
 
 
 MEMORY_SAFETY = 1.5     # memory grows a little faster than the mesh (direct solver fill-in):
@@ -242,7 +264,7 @@ def _predicted_bytes(baseline, peak, growth):
 
 
 def simulate(bound, board, clean, *, max_refinements=3, log=None, memory_limit_bytes=None,
-             notes=()):
+             notes=(), stages=()):
     """RunResult for every rail of ``bound`` (a BoundSetup) on ``board``.
 
     With ``memory_limit_bytes``, a refinement round is not started when its predicted
@@ -253,7 +275,7 @@ def simulate(bound, board, clean, *, max_refinements=3, log=None, memory_limit_b
     baseline = peak_bytes()
     rails = []
     for rail in bound.rails:
-        history, previous, completed, counts, memory = [], None, None, [], []
+        history, previous, completed, counts, memory, rounds = [], None, None, [], [], []
         change, allowed = {}, {}
         for scale in SCALES[:max_refinements + 1]:
             need = None
@@ -279,6 +301,8 @@ def simulate(bound, board, clean, *, max_refinements=3, log=None, memory_limit_b
                              scale)
             counts.append(power.triangles + gnd.triangles)
             memory.append((scale, need, peak_bytes()))
+            rounds += [RoundTiming(scale, n.net, n.role, n.triangles, n.factorization_s,
+                                   n.stages) for n in (power, gnd)]
             loads = []
             for load in rail.loads:
                 v_power = power.group_voltage_v[load.name]
@@ -300,7 +324,8 @@ def simulate(bound, board, clean, *, max_refinements=3, log=None, memory_limit_b
                            for r in loads}
             completed = RailResult(rail.power_net, rail.gnd_net, rail.source.name,
                                    rail.source.volts, scale, tuple(loads), power, gnd,
-                                   tuple(history), change, allowed, memory=tuple(memory))
+                                   tuple(history), change, allowed, memory=tuple(memory),
+                                   rounds=tuple(rounds))
             if previous is not None and all(change[n] <= allowed[n] for n in change):
                 rails.append(completed)
                 break
@@ -314,4 +339,5 @@ def simulate(bound, board, clean, *, max_refinements=3, log=None, memory_limit_b
                 + "; ".join(f"scale {s:g}: {v[worst]:.6f} V" for s, v in history))
     return RunResult(tuple(rails), setup.plating_m, setup.resistivity_ohm_m,
                      setup.barrel_resistivity_ohm_m, setup.tolerance_v, setup.tolerance_rel,
-                     perf_counter() - started, tuple(notes), memory_limit_bytes, peak_bytes())
+                     perf_counter() - started, tuple(notes), memory_limit_bytes, peak_bytes(),
+                     tuple(stages))
