@@ -42,6 +42,33 @@ def test_reuses_one_factorization_and_snapshots_inputs(monkeypatch):
     assert prepared.last_solve.max_rhs_bytes == 16
 
 
+def test_statistics_do_not_copy_the_factor(monkeypatch):
+    # SciPy's lu.L and lu.U build new copies of the factor; reading them for statistics
+    # doubled the factor's memory. The statistics now come from what SuperLU stores.
+    original = solver.splu
+
+    class NoCopies:
+        def __init__(self, lu):
+            self._lu = lu
+
+        def __getattr__(self, name):
+            if name in ("L", "U"):
+                raise AssertionError(f"lu.{name} copies the factor")
+            return getattr(self._lu, name)
+
+    monkeypatch.setattr(solver, "splu", lambda matrix: NoCopies(original(matrix)))
+    nodes, triangles = rectangle_mesh(1e-3, 1e-3, 8, 8)[:2]
+    matrix = assemble_sheet(nodes, triangles, 1.0)
+    prepared = solver.prepare_fixed_voltages(matrix, np.array([0]))
+    lu = prepared._lu
+    assert isinstance(lu, NoCopies) and prepared.stats.factor_nnz == lu.nnz > matrix.nnz
+    stored = sum(x.data.nbytes + x.indices.nbytes + x.indptr.nbytes
+                 for x in (prepared._matrix, prepared._coupling))
+    assert prepared.stats.sparse_storage_bytes == stored + 12 * lu.nnz + 8 * (len(prepared._free) + 1)
+    v = prepared.solve(1.0, np.zeros(matrix.shape[0]))
+    np.testing.assert_allclose(v, 1.0)
+
+
 @pytest.mark.parametrize("batch", [1, 2, 10])
 def test_transfer_batches_match_analytic_and_direct_currents(batch):
     prepared = solver.prepare_fixed_voltages(chain(), [0])
