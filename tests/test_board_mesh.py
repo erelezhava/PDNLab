@@ -209,3 +209,57 @@ def test_every_pad_is_whole_triangles_and_an_equipotential_contact(thermal, mesh
             assert set(contact.nodes) == set(np.unique(L.triangles[mine]))
             pads_seen += 1
     assert pads_seen == 6           # GND pads: TP1 on all 4 layers, R1.2 and TP2 on F.Cu
+
+
+# Thin copper must refine with the scale (review 2026-11-26): its narrow parts are found
+# once at scale 1, and the cap w / per_width is multiplied by the scale. Before the fix
+# the width ladder moved with the scale by exactly two √2 steps per halving, so the same
+# cap won at every round and a thin track was never refined.
+
+def test_thin_copper_is_found_at_scale_1_whatever_the_scale():
+    # The narrow parts and their size at scale 1 do not depend on the scale; the size
+    # fields multiply it by the scale. Before the fix the width ladder moved with the
+    # scale by exactly two √2 steps per halving, so a thin track's size never changed.
+    from shapely.geometry import box
+    from pdnlab_dc.board_mesh import _thin_regions, _thin_samples
+    from pdnlab_dc.run import SCALES
+    track = box(0, 0, 10e-3, 80e-6)                                  # 10 mm x 80 µm
+    found = {s: _thin_samples(_thin_regions(track, MeshSizes(scale=s)), MeshSizes(scale=s))
+             for s in SCALES}
+    for s in SCALES[1:]:
+        assert found[s] == found[1.0]
+    # The first ladder width above 80 µm is 2 mm / √2^9 = 88.4 µm: 22.1 µm, 4 across.
+    cap, points = min(found[1.0], key=lambda f: f[0])
+    assert cap == pytest.approx(2e-3 / math.sqrt(2) ** 9 / 4, rel=1e-9)
+    assert len(points) >= track.length / cap
+
+
+def test_a_thin_neck_into_wide_copper_refines_inside_the_neck(thermal):
+    # Two 3 mm squares joined by a 1 mm x 80 µm neck. A whole-board triangle count can
+    # hide an unchanged neck, so the sizes are measured inside the neck itself.
+    from shapely.geometry import box
+    base, _ = thermal
+    x0, y0, w = 0.2, 0.1, 80e-6
+    outline = unary_union([box(x0, y0, x0 + 3e-3, y0 + 3e-3),
+                           box(x0 + 3e-3, y0 + 1.5e-3 - w / 2, x0 + 4e-3, y0 + 1.5e-3 + w / 2),
+                           box(x0 + 4e-3, y0, x0 + 7e-3, y0 + 3e-3)])
+    neck = box(x0 + 3.2e-3, y0 + 1.5e-3 - w / 2, x0 + 3.8e-3, y0 + 1.5e-3 + w / 2)
+    feature = CopperFeature("test:neck", "GND", "In1.Cu", "fill", outline)
+    board = replace(base, features=(feature,), pads=(), drills=())
+    clean = clean_copper(board, PLATING)
+    inside, plate = {}, {}
+    for scale in (1.0, 0.5, 0.25):
+        (L,) = mesh_net(clean, board, "GND", MeshSizes(scale=scale)).layers
+        _, h, centre = triangle_sizes(L)
+        in_neck = np.array([neck.contains(Point(x, y)) for x, y in centre])
+        far = np.abs(centre[:, 0] - (x0 + 3.5e-3)) > 2e-3            # plate, away from the neck
+        inside[scale], plate[scale] = np.median(h[in_neck]), np.median(h[far])
+        assert in_neck.sum() >= 4 * 0.6e-3 / inside[scale]            # 4 across, the full length
+    # The neck: 4 triangles across at scale 1 (cap 22 µm), and it halves with the scale.
+    assert inside[1.0] < w / 3
+    assert 0.4 < inside[0.5] / inside[1.0] < 0.6
+    assert 0.4 < inside[0.25] / inside[0.5] < 0.6
+    # The plates grow back out from the neck (growth 0.075, like a hole): below the
+    # maximum near the junction, and halving with the scale too.
+    assert plate[1.0] < 0.5e-3
+    assert 0.4 < plate[0.5] / plate[1.0] < 0.6

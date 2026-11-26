@@ -2756,3 +2756,75 @@ control child; the written files; `run` on the public arc board.
 Not covered: several rails sharing GND (see above); a round refused for memory
 on a real board (shown only on a test case); runs on a machine other than
 Erekle's laptop.
+
+## 2026-11-26 — Fix: thin copper was not refined (review finding P1, mesh halving)
+
+Found by the external review of 2026-11-26 (`docs/project-review-2026-11-26.md`,
+P1 "the first mesh halving can compare a thin conductor with itself") and checked
+against the code at commit 3236ab0. Two separate faults in the thin-copper rule
+of `board_mesh.py`; both fixed in one increment (Erekle, 2026-11-26: fix as
+planned; option A for the second fault).
+
+1. **The size did not refine with the scale.** The width ladder started at
+   4 × maximum × scale and stepped by √2. Every refinement scale (1, 0.5, 0.25,
+   0.125) is a power of 2, so halving the scale moved the ladder by exactly two
+   steps: the same widths every round. The cap w / `per_width` had no scale in
+   it, so the same cap won at every round. An isolated 10 mm × 80 µm track got
+   22.1 µm at all four scales. Fix: thin parts are found once at scale 1 (a
+   width does not refine) and their size is scale × w / `per_width`. At the top
+   of the ladder (w = 4 × maximum) this equals the scaled maximum, so the rule
+   hands over to the maximum without a step. Sizes at scale 1 are unchanged.
+2. **The cap was applied only at the piece's own outline vertices.** A neck or
+   a track merged into wider copper has vertices only at its junctions, and the
+   opening leaves about 18 µm at each end of the neck outside the thin part, so
+   no vertex was capped: an 80 µm neck between two plates was meshed at about
+   215 µm, less than one triangle across. Fix (option A, chosen by Erekle over
+   a background size field from Python): points along the outline of every thin
+   part feed the same Distance and Threshold fields as holes and pads, at the
+   part's size, growing back out with the hole rule's 0.075 per mm through the
+   junctions. The vertex-only `_cap_thin` is removed; one mechanism remains.
+
+Measured 2026-11-26 in Claude's workspace (Gmsh 4.15.2, Python 3.13; Erekle's
+machine has Gmsh 4.14.0-git):
+
+Neck test case: two 3 mm × 3 mm plates joined by a 1 mm × 80 µm neck,
+resistance between the outer edges in squares (R × σt).
+
+| Scale | Before: triangles | Before: R | After: triangles | After: neck size | After: R |
+| --- | --- | --- | --- | --- | --- |
+| 1 | 192 | 15.556 | 3,988 | 22.7 µm | 16.4822 |
+| 0.5 | 712 | 15.854 | 15,710 | 11.4 µm | 16.5306 |
+| 0.25 | 2,788 | 16.117 | 61,992 | 5.8 µm | 16.5493 |
+| 0.125 | 10,896 | 16.273 | 247,094 | 2.9 µm | 16.5568 |
+
+- After the fix each change is about 0.4 of the one before; extrapolated
+  about 16.562. Scale 1 is 0.48 % low (gate 5: 1 %); before, 6.1 % low and
+  still drifting at scale 0.0625 (16.456, 43,040 triangles).
+
+Fixture boards, before → after:
+
+- Thermal board GND, scale 1: 90,764 → 92,138 triangles (+1.5 %); gate-5 paths
+  A and B 0.85167 / 0.90027 → 0.85166 / 0.90023 mΩ (the spokes are wide enough
+  that the hole rule already decided their sizes).
+- Arc board +3.3V, scale 1 / 0.5: 2,423 / 7,091 → 3,324 / 11,559 triangles
+  (+37 % / +63 %). `simulate` with the arc-board setup of `test_run.py` (2 A):
+  settled at scale 0.5 both times; load sees 3.202805637 → 3.202685886 V (drop
+  +0.12 mV, +0.12 %); the change from scale 1 to 0.5 was 186 µV, now 87 µV.
+- Full suite: 755 passed before, 757 after (2 new), 4 skipped both times
+  (KiCad CLI and the private boards are not in the workspace).
+
+Result / Recommendation: thin copper is now refined at every round and its
+size holds through junctions; first-round accuracy on a neck went from 6.1 %
+to 0.48 % low. Recommendation: re-run the private board before relying on its
+increment 13 result (3.917 mV, settled at scale 0.5): its tracks and necks were
+meshed by the maximum only, and its triangle count, time and peak memory per
+round will rise by an amount not yet measured.
+
+Tests: `tests/test_board_mesh.py` — thin parts and their scale-1 size do not
+depend on the scale (no Gmsh needed for the rule, the module needs Gmsh); an
+80 µm neck into wide copper: sizes measured inside the neck halve at each of
+scales 1, 0.5, 0.25, at least 4 across, and the plates grade back out and halve.
+
+Not covered: the private board (not run); Gmsh 4.14 (not run); the 8-layer
+benchmark. Known limit kept: size rules are keyed by whole micrometres, so a
+2.76 µm cap is written as 3 µm.
