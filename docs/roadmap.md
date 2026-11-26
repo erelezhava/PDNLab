@@ -5,7 +5,7 @@ measured results live in [DECISIONS.md](DECISIONS.md); the full plan, gates and
 estimates in [project-plan.md](project-plan.md). Update this file after each
 increment, in the same commit or pull request.
 
-Last updated: 2026-11-26, after the thin-copper mesh fix (review finding, not yet merged).
+Last updated: 2026-11-26, after the thin-copper mesh fix and the one-rail guard (review findings, not yet merged).
 
 ## Where we are
 
@@ -59,7 +59,7 @@ after release 0.1.
 | 13 | Solve with the refinement check; voltage and current-density maps (VTU and PNG), text/CSV summary (per-load voltage, per-pin and per-via currents, hot spots, losses); `pdnlab-dc run`; memory protection | Merged, PR #38; private board: 3.917 mV at 1 A, settled at scale 0.5, peak 7.1 GB, 547 s |
 | 10a | Fix from the 2026-11-26 review: thin copper refined with the scale and through junctions (`board_mesh.py`) | Branch `fix-thin-mesh-refinement`, not merged; neck case 6.1 % → 0.48 % low at scale 1; private board 3.917 → 3.918 mV, +2.3 % triangles, +10 % time |
 | P | Performance stage (below) | Next |
-| G | GND with several rails: one GND solve carrying every rail's return current | Planned, design to decide |
+| G | GND with several rails: one GND solve carrying every rail's return current | Planned, design to decide. Until then a setup with several rails is refused (2026-11-26) |
 | 14 | Release 0.1 gate run on the real test board | Planned, after P and G |
 
 Increments P, G and 14 are an outline, not yet agreed in detail; each is split
@@ -110,7 +110,8 @@ test board, or a public one).
 ## Open decisions
 
 - GND with several rails (increment G): GND carries every rail's return current
-  at once; the per-rail GND solve is right for one rail only.
+  at once; the per-rail GND solve is right for one rail only. Guarded since
+  2026-11-26: `check` and `run` refuse more than one rail per setup file.
 - Meshing time on dense nets: a private power net takes 42 s per mesh at scale
   1, because refinement zones around 30 holes and many pads cover the plane.
   Moved into the performance stage (item 7).

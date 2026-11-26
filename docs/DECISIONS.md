@@ -2847,3 +2847,52 @@ scales 1, 0.5, 0.25, at least 4 across, and the plates grade back out and halve.
 Not covered: a real board whose drop runs mainly through tracks; the 8-layer
 benchmark. Known limit kept: size rules are keyed by whole micrometres, so a
 2.76 µm cap is written as 3 µm.
+
+## 2026-11-26 — Guard: one rail per setup file until GND carries every rail (review finding P1)
+
+From the external review of 2026-11-26 (P1 "accepted multi-rail setups omit
+other rails' return currents"), confirmed in the code: `bind_setup` accepted
+several `[[source]]`s, and `run.simulate` solved the GND net once per rail with
+that rail's source and loads only. With two rails in one file the result read as
+"both rails at once" while each GND drop left out the other rail's return
+current (the review's example: a 10 mΩ shared neck carrying two 1 A returns
+drops 20 mV, each per-rail solve sees 10 mV).
+
+Every GND pin of a setup file is already required to be on one GND net, so
+"several rails sharing GND" is exactly "more than one rail in the file".
+
+Decided by Erekle (2026-11-26, option A of three; B was a warning, C an opt-in
+option): `bind_setup` refuses more than one rail, so `check` and `run` stop with:
+
+> 2 rails share the GND net 'GND' ('+3.3V', '+5V'): simulating them together is
+> not supported yet (planned increment G); the GND drop would leave out the other
+> rails' return current. Use one setup file per rail; each then shows that rail
+> on its own
+
+A file with one rail answers a well-defined question (that rail alone); the
+guard is removed by increment G. The setup form (`pdnlab-dc init`) now says one
+rail per file instead of inviting a `[[source]]` per power net. The shared-GND
+file naming in `results.py` is kept for increment G.
+
+README: the status block (still describing Phase 1 and an unimplemented
+importer) is replaced by a "Current support and limits" list: KiCad 10 through
+IPC-2581, one rail per setup file, Gmsh needed for a board run, two geometry
+checks not done yet from the same review (copper outside the board outline,
+copper of two nets touching only along an edge; KiCad's DRC catches both), and
+results for review until release 0.1.
+
+Measured 2026-11-26 in Claude's workspace: full suite 759 passed, 4 skipped
+(KiCad CLI and the private boards not present); the two new tests fail on the
+code before the change.
+
+Result / Recommendation: a setup with two rails sharing GND is now refused with
+a message that says why and what to do; single-rail setups are unchanged (the
+private board's setup has one rail). Recommendation: merge; increment G removes
+the guard.
+
+Tests: `tests/test_setup.py` — on the arc board plus a copy of R1 and R2 as a
+second power net: one rail binds, two rails are refused with the message; the
+setup form asks for one rail per file.
+
+Not covered: `check` and `run` on Erekle's machine with a two-rail file (the same
+`bind_setup` call; not run).
