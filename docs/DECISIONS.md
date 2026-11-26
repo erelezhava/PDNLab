@@ -2811,20 +2811,39 @@ Fixture boards, before → after:
   settled at scale 0.5 both times; load sees 3.202805637 → 3.202685886 V (drop
   +0.12 mV, +0.12 %); the change from scale 1 to 0.5 was 186 µV, now 87 µV.
 - Full suite: 755 passed before, 757 after (2 new), 4 skipped both times
-  (KiCad CLI and the private boards are not in the workspace).
+  (KiCad CLI and the private boards are not in the workspace). On Erekle's
+  machine (Gmsh 4.14.0-git): 761 passed, none skipped.
+
+Private board, the increment 13 setup (one rail at 1 A), `pdnlab-dc run` on
+Erekle's laptop, before (branch `perf-stage-timing`) → after:
+
+| | Before | After |
+| --- | --- | --- |
+| Triangles, scale 1 (power + GND) | 961,634 | 983,477 (+2.3 %) |
+| Triangles, scale 0.5, power / GND | 622,063 / 3,016,020 | 670,173 / 3,052,230 (+7.7 % / +1.2 %) |
+| Load sees, scale 1 → 0.5 | 3.296097 → 3.296083 V | 3.296095 → 3.296082 V |
+| Change, allowed | 14.14 µV, 49.17 µV: settled | 13.30 µV, 49.18 µV: settled |
+| Drop (power + GND) | 3.917 mV (2.809 + 1.108) | 3.918 mV (2.810 + 1.108) |
+| Peak memory, scale 0.5 | 4.64 GB | 4.68 GB |
+| Mesh time, all four meshes | 646 s | 742 s (+15 %) |
+| All stages | 743 s | 815 s (+10 %) |
+
+- The drop moved by 1 µV (0.03 %): this rail's loss is mostly in an inner
+  plane (2.46 of 2.81 mW on the power net), so its thin copper carried little
+  of the drop. The cost is mostly Gmsh time (power net at scale 1: 60 → 93 s).
 
 Result / Recommendation: thin copper is now refined at every round and its
 size holds through junctions; first-round accuracy on a neck went from 6.1 %
-to 0.48 % low. Recommendation: re-run the private board before relying on its
-increment 13 result (3.917 mV, settled at scale 0.5): its tracks and necks were
-meshed by the maximum only, and its triangle count, time and peak memory per
-round will rise by an amount not yet measured.
+to 0.48 % low. The private board's increment 13 result stands (3.917 → 3.918 mV)
+at +2.3 % triangles and +10 % time. Recommendation: merge; a board whose drop
+runs through tracks or necks is where the fix changes the answer (neck case:
+6.1 % → 0.48 % low).
 
 Tests: `tests/test_board_mesh.py` — thin parts and their scale-1 size do not
 depend on the scale (no Gmsh needed for the rule, the module needs Gmsh); an
 80 µm neck into wide copper: sizes measured inside the neck halve at each of
 scales 1, 0.5, 0.25, at least 4 across, and the plates grade back out and halve.
 
-Not covered: the private board (not run); Gmsh 4.14 (not run); the 8-layer
+Not covered: a real board whose drop runs mainly through tracks; the 8-layer
 benchmark. Known limit kept: size rules are keyed by whole micrometres, so a
 2.76 µm cap is written as 3 µm.
