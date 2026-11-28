@@ -10,8 +10,11 @@ pins; ``setup_template(board, board_name)`` writes a form to fill in. Decided by
   by itself.
 * Power and GND are both simulated. Nets are found from the pins: a group's pins must
   all be on one net. Every GND pin of the file is on the same GND net.
-* Several rails in one file: each ``[[source]]`` defines a rail (its power net), each
-  ``[[load]]`` belongs to the rail its power pins are on. One source per power net.
+* Each ``[[source]]`` defines a rail (its power net), each ``[[load]]`` belongs to the
+  rail its power pins are on. One source per power net. For now one rail per file
+  (Erekle, 2026-11-26): every rail shares the one GND net, and solving it per rail
+  leaves out the other rails' return current, so ``bind_setup`` refuses several rails
+  until GND carries them all at once (roadmap increment G).
 * ``plating_um`` is required; ``resistivity_ohm_m``, ``barrel_resistivity_ohm_m``,
   ``tolerance_uv`` and ``tolerance_percent`` are optional (1.724e-8 Ω·m and release
   gate 5, 10 µV + 1 %).
@@ -294,6 +297,12 @@ def bind_setup(setup, board):
         if net not in rails:
             raise SetupError(f"{load.name!r}: its power_pins are on {net!r}, which has no source")
         rails[net][1].append(load)
+    if len(rails) > 1:
+        raise SetupError(
+            f"{len(rails)} rails share the GND net {gnd_net!r} ({', '.join(map(repr, rails))}): "
+            "simulating them together is not supported yet (planned increment G); the GND "
+            "drop would leave out the other rails' return current. Use one setup file per "
+            "rail; each then shows that rail on its own")
     return BoundSetup(setup, gnd_net, tuple(Rail(net, gnd_net, s, tuple(ls))
                                             for net, (s, ls) in rails.items()), tuple(expanded))
 
@@ -315,7 +324,8 @@ def setup_template(board, board_name, *, kicad_pcb_name=None, min_pins=3, width=
         "# A source holds its power pins at 'volts'; a load draws 'amps'. Each lists its",
         "# power pins and its GND pins; the pins of one list are joined (one group).",
         "# \"U1.*\" adds every pin of U1 on the list's net (name one pin to set the net).",
-        "# Several rails: add one [[source]] per power net and its [[load]]s.",
+        "# One rail (one [[source]] and its [[load]]s) per file for now: rails sharing",
+        "# GND together are not supported yet.",
         "",
         *([f"kicad_pcb = {kicad_pcb_name!r}".replace("'", '"') + "   # re-exported when newer"]
           if kicad_pcb_name else []),

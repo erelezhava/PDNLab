@@ -5,7 +5,7 @@ measured results live in [DECISIONS.md](DECISIONS.md); the full plan, gates and
 estimates in [project-plan.md](project-plan.md). Update this file after each
 increment, in the same commit or pull request.
 
-Last updated: 2026-11-22, after solving and output were merged (PR #38).
+Last updated: 2026-11-26, after the thin-copper mesh fix and the one-rail guard (review findings, not yet merged).
 
 ## Where we are
 
@@ -57,8 +57,9 @@ after release 0.1.
 | 12 | Setup file (`setup.py`, TOML): sources and loads by pin groups, nets from the pins; `pdnlab-dc init` writes a form, `pdnlab-dc check` checks it | Merged, PR #35; a filled-in form for the private board accepted |
 | 12a | Project flow: `init` from the `.kicad_pcb` (exported by `kicad-cli` into `pdnlab/`), re-export when newer; pin wildcards `U1.*` | Merged, PR #37; wildcards found 5 hidden GND pins on the private board |
 | 13 | Solve with the refinement check; voltage and current-density maps (VTU and PNG), text/CSV summary (per-load voltage, per-pin and per-via currents, hot spots, losses); `pdnlab-dc run`; memory protection | Merged, PR #38; private board: 3.917 mV at 1 A, settled at scale 0.5, peak 7.1 GB, 547 s |
+| 10a | Fix from the 2026-11-26 review: thin copper refined with the scale and through junctions (`board_mesh.py`) | Branch `fix-thin-mesh-refinement`, not merged; neck case 6.1 % → 0.48 % low at scale 1; private board 3.917 → 3.918 mV, +2.3 % triangles, +10 % time |
 | P | Performance stage (below) | Next |
-| G | GND with several rails: one GND solve carrying every rail's return current | Planned, design to decide |
+| G | GND with several rails: one GND solve carrying every rail's return current | Planned, design to decide. Until then a setup with several rails is refused (2026-11-26) |
 | 14 | Release 0.1 gate run on the real test board | Planned, after P and G |
 
 Increments P, G and 14 are an outline, not yet agreed in detail; each is split
@@ -98,7 +99,7 @@ test board, or a public one).
 | 2 Current conservation, global | Passed on the private board, power and GND (PR #38; a run stops if any check fails) |
 | 3 Current conservation, per via | Passed on the private board, power and GND (PR #38) |
 | 4 Power balance | Passed on the private board: losses equal drop × current on both nets (PR #38) |
-| 5 Mesh convergence on the real board | Shown on the production path for one power net (plane +0.38%, pin to pin +0.33% at the first halving); every run now refines until settled (private board: 14.14 µV against 49.17 µV allowed at scale 0.5) |
+| 5 Mesh convergence on the real board | Shown on the production path for one power net (plane +0.38%, pin to pin +0.33% at the first halving); every run now refines until settled (private board: 14.14 µV against 49.17 µV allowed at scale 0.5); re-run after 10a (thin copper now refined): 13.30 µV, settled, drop 3.918 mV |
 | 6 Cross-check with padne | Reference run recorded in experiment 7; production comparison open |
 
 ## After release 0.1
@@ -109,7 +110,8 @@ test board, or a public one).
 ## Open decisions
 
 - GND with several rails (increment G): GND carries every rail's return current
-  at once; the per-rail GND solve is right for one rail only.
+  at once; the per-rail GND solve is right for one rail only. Guarded since
+  2026-11-26: `check` and `run` refuse more than one rail per setup file.
 - Meshing time on dense nets: a private power net takes 42 s per mesh at scale
   1, because refinement zones around 30 holes and many pads cover the plane.
   Moved into the performance stage (item 7).

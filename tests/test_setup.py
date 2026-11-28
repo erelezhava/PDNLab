@@ -149,6 +149,47 @@ def test_two_sources_on_one_power_net(arc):
         bind_setup(replace(base, sources=(a, b), loads=()), arc)
 
 
+def two_rail_board(arc):
+    """The arc board plus a copy of R1 and R2 as R3 and R4 on a second power net, +5V,
+    10 mm below: two rails sharing GND."""
+    from shapely.affinity import translate
+    from pdnlab_dc.board import Net
+    features = {f.id: f for f in arc.features}
+    more_f, more_p = [], []
+    for p in arc.pads:
+        ref = {"R1": "R3", "R2": "R4"}[p.component_ref]
+        net = "+5V" if p.net_id == "+3.3V" else p.net_id
+        old = features[p.copper_feature_ids[0]]
+        fid = old.id.replace(p.component_ref, ref)
+        more_f.append(replace(old, id=fid, net_id=net, geometry=translate(old.geometry, 0, 0.01)))
+        more_p.append(replace(p, id=p.id.replace(p.component_ref, ref), component_ref=ref,
+                              net_id=net, position_m=(p.position_m[0], p.position_m[1] + 0.01),
+                              copper_feature_ids=(fid,)))
+    return replace(arc, nets=arc.nets + (Net("+5V", "+5V"),),
+                   features=arc.features + tuple(more_f), pads=arc.pads + tuple(more_p),
+                   component_layers=arc.component_layers + (("R3", "F.Cu"), ("R4", "F.Cu")))
+
+
+def test_two_rails_sharing_gnd_are_refused_for_now(arc):
+    # Solving GND per rail leaves out the other rail's return current (increment G).
+    board = two_rail_board(arc)
+    base = parse(GOOD)
+    one = bind_setup(base, board)                      # one rail on the same board: fine
+    assert [r.power_net for r in one.rails] == ["+3.3V"]
+    second = (Source("five", 5.0, ("R3.1",), ("R3.2",)), Load("io", 0.2, ("R4.1",), ("R4.2",)))
+    two = replace(base, sources=base.sources + second[:1], loads=base.loads + second[1:])
+    with pytest.raises(SetupError, match=r"^2 rails share the GND net 'GND' \('\+3.3V', '\+5V'\): "
+                                         r"simulating them together is not supported yet "
+                                         r"\(planned increment G\).*one setup file per rail"):
+        bind_setup(two, board)
+
+
+def test_the_form_asks_for_one_rail_per_file(arc):
+    form = setup_template(arc, "arc.xml")
+    assert "One rail (one [[source]] and its [[load]]s) per file for now" in form
+    assert "add one [[source]] per power net" not in form
+
+
 def test_power_pins_on_the_gnd_net(arc):
     base = parse(GOOD)
     on_gnd = Source("g", 1.0, ("R1.2",), ("R2.2",))

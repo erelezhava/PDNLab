@@ -22,11 +22,16 @@ its edge (where the contact model attaches the barrel). Decided by Erekle
     0.3 mm spokes was 2.2 % low at scale 1, starting at a quarter of the side 1.8 %,
     at a sixteenth 0.7 %. Current crowds at an equipotential pad's edge, so it
     converges slowly (each halving halves the change);
-  - thin copper: in any part of a piece narrower than w, at most w / ``per_width``
-    (4: four triangles across a spoke, neck or track). Narrow parts are found by
-    opening each piece (shrink by w/2, grow by w/2) at widths 4 × maximum, then
-    smaller by a factor of √2, and keeping what is removed when it is elongated (area
-    at least w²/2), so that the rounding of convex corners does not count as thin.
+  - thin copper: in any part of a piece narrower than w, at most scale × w /
+    ``per_width`` (4: four triangles across a spoke, neck or track), growing back out
+    with ``growth`` like the hole rule. Narrow parts are found once at scale 1 (a
+    width does not refine) by opening each piece (shrink by w/2, grow by w/2) at
+    widths 4 × maximum, then smaller by a factor of √2, and keeping what is removed
+    when it is elongated (area at least w²/2), so that the rounding of convex corners
+    does not count as thin. The rule is applied through points along each part's
+    outline in the size fields, not only at the piece's own vertices: a neck or a
+    track merged into wider copper has vertices only at its junctions, which the
+    opening leaves just outside the part (review 2026-11-26).
 * The mesh follows every pad outline of the net, so each pad is exactly a set of whole
   triangles (``pad_of``) and can be an equipotential contact. Pieces and pads are
   rounded onto a 10 nm grid (``GRID_M``) and noded together at that precision, so
@@ -47,7 +52,6 @@ from time import perf_counter
 
 import meshio
 import numpy as np
-from shapely import STRtree
 from shapely.geometry import Point, Polygon
 from scipy.spatial import cKDTree
 import shapely
@@ -121,7 +125,7 @@ def _spacing(points):
 def _thin_regions(piece, sizes):
     """[(width w, region narrower than w)], widest first, for the thin-copper rule."""
     regions = []
-    w = sizes.per_width * sizes.max_m * sizes.scale
+    w = sizes.per_width * sizes.max_m          # at scale 1: a width does not refine
     smallest = 2e-6
     while w / sizes.per_width > smallest:
         opened = piece.buffer(-w / 2, quad_segs=8).buffer(w / 2, quad_segs=8)
@@ -133,19 +137,23 @@ def _thin_regions(piece, sizes):
     return regions
 
 
-def _cap_thin(points, lc, regions, sizes):
-    """Apply the thin-copper rule to the sizes at ``points`` (in place)."""
+def _thin_samples(regions, sizes):
+    """[(size at scale 1, [(x, y), ...])] for the thin-copper rule: points along the
+    outline of every thin part, spaced at the part's own size. They feed the same
+    Distance and Threshold fields as holes and pads, so the size holds along the part's
+    edges and inside it (every point of it is within w/2 of its outline), and grows
+    back out with ``growth`` through the junctions with wider copper."""
+    found = []
     for w, parts in regions:
-        if not parts:
-            continue
-        tree = STRtree(parts)
         cap = w / sizes.per_width
-        for i, (x, y) in enumerate(points):
-            if lc[i] <= cap:
-                continue
-            q = Point(x, y)
-            if any(parts[j].distance(q) <= 1e-7 for j in tree.query(q.buffer(1e-7))):
-                lc[i] = cap
+        points = []
+        for part in parts:
+            for ring in (part.exterior, *part.interiors):
+                n = max(4, int(math.ceil(ring.length / cap)))
+                points += [ring.interpolate(i / n, normalized=True).coords[0] for i in range(n)]
+        if points:
+            found.append((cap, points))
+    return found
 
 
 def _hole_ring(piece, cut, drills):
@@ -264,9 +272,9 @@ def _write_geo(path, pieces, drills, pads, refine, sizes):
             edges[key] = len(edges) + 1
         return edges[key] if a < b else -edges[key]
 
-    surface = 0
+    surface, thin = 0, []
     for k, piece in enumerate(pieces):
-        regions = _thin_regions(piece.geometry, sizes)
+        thin += _thin_samples(_thin_regions(piece.geometry, sizes), sizes)
         holes = {}
         for ring_index, drill_id in _hole_ring(piece.geometry, piece.drill_ids, drills).items():
             holes[drill_id] = piece.geometry.interiors[ring_index]
@@ -276,7 +284,6 @@ def _write_geo(path, pieces, drills, pads, refine, sizes):
             for ring in (face.exterior, *face.interiors):
                 pts = _ring_points(ring)
                 lc = np.minimum(_spacing(pts), sizes.max_m) * sizes.scale
-                _cap_thin(pts, lc, regions, sizes)
                 ids = [point((float(x), float(y)), float(s)) for (x, y), s in zip(pts, lc)]
                 loop = [edge(ids[i], ids[(i + 1) % len(ids)]) for i in range(len(ids))]
                 for drill_id, hole in holes.items():
@@ -325,6 +332,12 @@ def _write_geo(path, pieces, drills, pads, refine, sizes):
         rule = rules.setdefault(round(edge_size * 1e6), {"curves": [], "points": []})
         for i in range(n):
             x, y = ring.interpolate(i / n, normalized=True).coords[0]
+            extra += 1
+            lines.append(f"Point({extra}) = {{{x:.12g}, {y:.12g}, 0, {sizes.max_m * sizes.scale:.9g}}};")
+            rule["points"].append(extra)
+    for cap, points in thin:
+        rule = rules.setdefault(round(cap * 1e6), {"curves": [], "points": []})
+        for x, y in points:
             extra += 1
             lines.append(f"Point({extra}) = {{{x:.12g}, {y:.12g}, 0, {sizes.max_m * sizes.scale:.9g}}};")
             rule["points"].append(extra)

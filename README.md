@@ -2,17 +2,26 @@
 
 Open-source DC power-integrity (IR drop) solver for PCBs. Own solver code, KiCad 10 boards as the first input, Apache-2.0.
 
-**Status: Phase 1 solver core accepted by Erekle on 2026-11-15.**
-Merged through [PR #8](https://github.com/erelezhava/PDNLab/pull/8) with
-[passing CI on main](https://github.com/erelezhava/PDNLab/actions/runs/43740365125).
-Experiment scripts solve one real-board net. Phase 1 has reusable sparse-LU solves,
-checked named-network composition and finite-area contact selection on meshes.
-IPC-2581 and per-pin terminal-model choices are confirmed by the maintainer;
-the production importer and automatic contact-boundary remeshing are not implemented.
-See [the result log](docs/DECISIONS.md) for measured results and limitations,
-and the [dependency inventory](docs/dependency-license-audit.md) for the
-current licences and packaging boundaries. Production board integration remains
-Phase 2 work; Phase 1 acceptance covers the documented synthetic solver scope.
+**Status: Phase 2 (real boards), no release yet.** A KiCad 10 board runs end to
+end: `init`, `check` and `run` (below) give a settled DC drop with maps and tables.
+
+Current support and limits:
+
+- Input: KiCad 10 boards, through KiCad's IPC-2581 export (`kicad-cli`, run for
+  you by `init`, `check` and `run`). Other EDA tools are not supported.
+- One rail per setup file: one `[[source]]` and its `[[load]]`s. Several rails
+  sharing GND are refused for now: GND solved per rail would leave out the other
+  rails' return current (planned; see the [roadmap](docs/roadmap.md), increment G).
+- A board run needs the external Gmsh executable on `PATH` (see Setup).
+- Not checked yet: copper outside the board outline (KiCad's DRC catches it; the
+  importer does not read the outline), and copper of two nets that only touch
+  along an edge (an overlap is caught). Run KiCad's DRC first.
+- Results are for review, not sign-off: release 0.1 waits for its gates (see
+  the [roadmap](docs/roadmap.md)).
+
+Measured results and limitations are in [the result log](docs/DECISIONS.md); the
+current licences and packaging boundaries in the
+[dependency inventory](docs/dependency-license-audit.md).
 
 See the [development plan](docs/project-plan.md) for scope, architecture,
 experiments and release gates.
@@ -63,8 +72,9 @@ pins are not missed; `check` says how many pins each wildcard added. When the
 uv run pdnlab-dc run path/to/project/pdnlab/setup.toml
 ```
 
-Each rail's power net and the GND net are solved as separate networks carrying
-the same currents; each load sees V(power) − V(GND). The mesh is made finer
+The rail's power net and the GND net are solved as separate networks carrying
+the same currents; each load sees V(power) − V(GND). One rail per setup file for
+now (see the limits above). The mesh is made finer
 (scale 1, 0.5, 0.25, 0.125) until the voltage every load sees changes by at most
 the tolerance (default 10 µV + 1 % of its drop; `[options] tolerance_uv` and
 `tolerance_percent`).
